@@ -129,7 +129,7 @@ The Sheet gets two readable tabs, **Matches** and **Pits**, that you can sort, f
 ## 8. Updating the app
 
 1. Edit or replace the files in your GitHub repository.
-2. Change the `VERSION` line at the top of `sw.js` (for example `v1.1.1`). This tells the iPads that a new version exists.
+2. Change the `VERSION` line at the top of `sw.js` (for example `hive-scout-v1.1.2`), and `APP_VERSION` at the top of `js/app.js` to match. This tells the iPads that a new version exists. The Event tab shows which version an iPad is running.
 3. The next time each iPad opens the app while online, it shows *A new version is ready → Reload*.
 
 Each record's field order is the format used in the QR codes. If you add fields, add them only at the end of the lists in `js/schema.js`, so iPads running older and newer versions can still exchange data.

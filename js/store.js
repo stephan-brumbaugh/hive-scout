@@ -7,6 +7,9 @@ const K = {
   records: 'hs.records',
   picks: 'hs.picks',
   sent: 'hs.sent',
+  cloudSent: 'hs.cloudSent',      // record id -> ts last uploaded to the Google Sheet
+  cloudSentEv: 'hs.cloudSentEv',  // event code -> upd last uploaded
+  cloudDel: 'hs.cloudDel',        // record id -> time deleted here, waiting to be deleted in the Sheet
 };
 
 export const DEFAULT_SETTINGS = {
@@ -27,6 +30,10 @@ export const DEFAULT_SETTINGS = {
   weights: { role: 25, auto: 20, rp: 30, rel: 25 },
   slot: '',                   // remembered match-scouting position: R1 R2 B1 B2
   qrSpeed: 900,
+  cloudUrl: '',               // Google Apps Script web app URL (…/exec)
+  cloudKey: '',               // TEAM_KEY from the script
+  cloudOn: true,
+  cloudCursor: 0,             // last change number pulled from the Sheet
 };
 
 let storageOK = true;
@@ -63,12 +70,15 @@ export const state = {
   records: load(K.records, {}),
   picks: load(K.picks, {}),
   sent: load(K.sent, {}),
+  cloudSent: load(K.cloudSent, {}),
+  cloudSentEv: load(K.cloudSentEv, {}),
+  cloudDel: load(K.cloudDel, {}),
 };
 
 if (!state.settings.deviceId) {
-  const abc = 'abcdefghjkmnpqrstuvwxyz23456789';
-  let id = '';
-  for (let i = 0; i < 3; i++) id += abc[Math.floor(Math.random() * abc.length)];
+  const letters = 'abcdefghjkmnpqrstuvwxyz', abc = letters + '23456789';
+  let id = letters[Math.floor(Math.random() * letters.length)]; // starts with a letter so spreadsheets keep IDs as text
+  for (let i = 0; i < 2; i++) id += abc[Math.floor(Math.random() * abc.length)];
   state.settings.deviceId = id;
   saveKey(K.settings, state.settings);
 }
@@ -98,13 +108,18 @@ export function upsertRecord(r) {
 export function deleteRecord(id) {
   delete state.records[id];
   delete state.sent[id];
-  persist('records', 'sent');
+  delete state.cloudSent[id];
+  state.cloudDel[id] = Math.floor(Date.now() / 1000); // remove it from the Google Sheet (and other iPads) too
+  persist('records', 'sent', 'cloudSent', 'cloudDel');
 }
 
 export function isMine(r) { return r.id.startsWith(state.settings.deviceId); }
 
+// Records that exist only on this iPad: not handed over by QR and not yet in the Google Sheet.
 export function unsentRecords() {
-  return Object.values(state.records).filter(r => isMine(r) && !state.sent[r.id]);
+  const s = state.settings;
+  const cloudOn = s.cloudOn !== false && s.cloudUrl && s.cloudKey;
+  return Object.values(state.records).filter(r => isMine(r) && !state.sent[r.id] && !(cloudOn && state.cloudSent[r.id] === r.ts));
 }
 
 export function markSent(ids) {
@@ -146,7 +161,7 @@ export function setPick(team, flag, ev = state.settings.activeEvent) {
 }
 
 export function backupObject() {
-  const { ftcUser, ftcKey, ...settings } = state.settings;
+  const { ftcUser, ftcKey, cloudKey, cloudUrl, cloudCursor, ...settings } = state.settings;
   return {
     hsBackup: 1,
     exported: new Date().toISOString(),
@@ -181,5 +196,6 @@ export function clearAll() {
   for (const k of Object.values(K)) { try { localStorage.removeItem(k); } catch (e) { /* ignore */ } }
   state.settings = { ...DEFAULT_SETTINGS, weights: { ...DEFAULT_SETTINGS.weights }, deviceId: keepId };
   state.events = {}; state.records = {}; state.picks = {}; state.sent = {};
+  state.cloudSent = {}; state.cloudSentEv = {}; state.cloudDel = {};
   persist();
 }

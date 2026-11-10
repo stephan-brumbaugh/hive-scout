@@ -5,7 +5,9 @@ import { ftcscoutEvent, ftcscoutTeamEvents, ftcscoutSearch, firstApiEvent, manua
   teamsToText, scheduleToText } from './api.js';
 import { encodeMessage, Assembler, drawQR, Scanner } from './qr.js';
 import { observations, teamStats, eventContext, compatibility, tileXY } from './analysis.js';
+import { cloud, cloudConfigured, cloudActive, cloudPending, syncNow, syncSoon, startCloud, resetCloudProgress } from './cloud.js';
 
+export const APP_VERSION = '1.1.1'; // keep in step with VERSION in sw.js
 const S = () => state.settings;
 const $ = (sel, root = document) => root.querySelector(sel);
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -164,10 +166,77 @@ function renderHeader() {
   const net = $('#hdrNet');
   net.className = 'net ' + (navigator.onLine ? 'on' : 'off');
   net.textContent = navigator.onLine ? 'Online' : 'Offline';
+  const c = $('#hdrCloud');
+  if (c) {
+    const st = cloudStatus();
+    c.classList.toggle('hidden', !cloudConfigured());
+    c.className = 'pill cloud ' + st.cls + (cloudConfigured() ? '' : ' hidden');
+    c.textContent = '☁ ' + st.short;
+  }
+  const box = $('#cloudStatus');
+  if (box) box.innerHTML = cloudStatusHTML();
   document.querySelectorAll('.tabbar button').forEach(b => b.classList.toggle('active', b.dataset.tab === ui.tab));
 }
 
+function ago(t) {
+  const s = Math.round((Date.now() - t) / 1000);
+  if (s < 45) return 'just now';
+  if (s < 3600) return Math.round(s / 60) + ' min ago';
+  return new Date(t).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+}
+
+function cloudStatus() {
+  const p = cloudPending();
+  if (!cloudConfigured()) return { cls: 'off', short: 'Off', text: 'Not set up' };
+  if (S().cloudOn === false) return { cls: 'off', short: 'Paused', text: `Paused · ${p} waiting to upload` };
+  if (cloud.busy) return { cls: 'busy', short: 'Syncing', text: 'Syncing…' };
+  if (navigator.onLine === false) return { cls: 'off', short: p ? `${p} waiting` : 'Offline', text: `Offline · ${p} waiting to upload when back online` };
+  if (cloud.lastErr) return { cls: 'err', short: 'Problem', text: 'Last sync failed: ' + cloud.lastErr };
+  if (p) return { cls: 'warn', short: `${p} waiting`, text: `${p} records waiting to upload` };
+  if (cloud.lastOk) return { cls: 'ok', short: 'Synced', text: `All synced · ${ago(cloud.lastOk)}` };
+  return { cls: 'warn', short: 'Waiting', text: 'Waiting for first sync…' };
+}
+
+function cloudStatusHTML() {
+  const st = cloudStatus();
+  return `<span class="pill ${st.cls}">${esc(st.short)}</span> ${esc(st.text)}${cloud.lastPulled ? ` <span class="muted small">· last download brought in ${cloud.lastPulled} change${cloud.lastPulled === 1 ? '' : 's'}</span>` : ''}`;
+}
+
+function cloudCfgForQR() {
+  return cloudConfigured() ? { u: S().cloudUrl.trim(), k: S().cloudKey.trim() } : null;
+}
+
+function applyCloudConfig(c) {
+  if (!c || !c.u || !c.k) return false;
+  const same = S().cloudUrl.trim() === c.u && S().cloudKey.trim() === c.k;
+  if (same) return false;
+  if (cloudConfigured() && S().cloudUrl.trim() !== c.u &&
+    !confirm('Switch this iPad\'s cloud backup to the Google Sheet used by the other iPad?')) return false;
+  const urlChanged = S().cloudUrl.trim() !== c.u;
+  state.settings.cloudUrl = c.u;
+  state.settings.cloudKey = c.k;
+  state.settings.cloudOn = true;
+  persist('settings');
+  if (urlChanged) resetCloudProgress();
+  syncSoon(500);
+  return true;
+}
+
+// Re-render after a field loses focus, but late enough that the tap which caused the blur
+// still lands on the button the person actually tapped.
+function renderSoon() {
+  clearTimeout(ui.renderTimer);
+  ui.renderTimer = setTimeout(render, 350);
+}
+
+function refreshCloudButtons() {
+  const ok = cloudConfigured();
+  document.querySelectorAll('[data-act="cloudSync"],[data-act="cloudToggle"],[data-act="shareCloud"]').forEach(b => { b.disabled = !ok; });
+  renderHeader();
+}
+
 function render() {
+  clearTimeout(ui.renderTimer);
   if (ui.scanner && ui.scanner.running) stopScanner();
   const fn = { event: viewEvent, scout: viewScout, sync: viewSync, teams: viewTeams, partners: viewPartners }[ui.tab];
   const y = window.scrollY;
@@ -199,7 +268,7 @@ function viewEvent() {
       <label>Scout name<input data-set="scoutName" value="${esc(s.scoutName)}" placeholder="First name" autocomplete="off"></label>
       <label>Our team number<input data-set="ourTeam" data-type="int" value="${esc(s.ourTeam)}" inputmode="numeric" placeholder="e.g. 12345"></label>
     </div>
-    <p class="muted small">Device ID <b>${esc(s.deviceId)}</b> · ${recCount} records stored on this iPad</p>
+    <p class="muted small">Device ID <b>${esc(s.deviceId)}</b> · ${recCount} records stored on this iPad · App version <b>${APP_VERSION}</b></p>
   </section>
 
   <section class="card">
@@ -265,7 +334,7 @@ function scoutPanel() {
   return `
     <p class="muted small">FTCScout is a free public site that mirrors FIRST's official data. No account needed.</p>
     <div class="row">
-      <button data-act="findMine" ${s.ourTeam ? '' : 'disabled'}>Find events for team ${esc(s.ourTeam || '—')}</button>
+      <button data-act="findMine">Find my team's events</button>
     </div>
     <div class="row">
       <input id="evSearch" data-ui="qSearch" value="${esc(ui.qSearch || '')}" placeholder="Search by event name or city" autocomplete="off">
@@ -554,7 +623,23 @@ function viewSync() {
   const ev = activeEvent();
   const unsent = unsentRecords().length;
   const evCount = ev ? eventRecords(ev.code).length : 0;
+  const s = S();
   return `
+  <section class="card">
+    <h2>Cloud backup · Google Sheet</h2>
+    <p class="muted small">When this iPad is online it uploads new scouting by itself and downloads everyone else's. With no internet it keeps working and catches up later. QR codes are only needed when nobody has internet.</p>
+    <div class="grid2">
+      <label>Web app URL<input data-set="cloudUrl" value="${esc(s.cloudUrl)}" placeholder="https://script.google.com/macros/s/…/exec" autocapitalize="off" autocomplete="off" spellcheck="false"></label>
+      <label>Team key<input data-set="cloudKey" value="${esc(s.cloudKey)}" placeholder="TEAM_KEY from the script" autocapitalize="off" autocomplete="off" spellcheck="false"></label>
+    </div>
+    <div id="cloudStatus" class="cloudstatus">${cloudStatusHTML()}</div>
+    <div class="btnrow">
+      <button class="primary" data-act="cloudSync" ${cloudConfigured() ? '' : 'disabled'}>Sync now</button>
+      <button data-act="cloudToggle" ${cloudConfigured() ? '' : 'disabled'}>${s.cloudOn === false ? 'Resume auto sync' : 'Pause auto sync'}</button>
+      <button data-act="shareCloud" ${cloudConfigured() ? '' : 'disabled'}>Share cloud setup by QR</button>
+    </div>
+    <p class="muted small">To set up another iPad, scan <b>Share cloud setup by QR</b> from it. <b>Share event by QR</b> includes the cloud setup too.</p>
+  </section>
   <section class="card">
     <h2>Send from this iPad</h2>
     <p class="muted small">Shows a QR code (or a short animated series) for another iPad or laptop to scan. Keep this screen bright and hold steady.</p>
@@ -614,12 +699,19 @@ async function handleMessage(obj) {
     persist('records');
     logScan(`${all.length} records from ${obj.sc || 'device ' + (obj.dv || '?')}: ${n} new, ${u} updated, ${same} already had`);
     toast(`Received ${all.length} records (${n} new)`, 'ok');
+    syncSoon();
   } else if (obj.k === 'evt') {
     const ev = normalizeEvent(obj.d);
     saveEvent(ev);
     ui.mf = null; ui.pf = null;
-    logScan(`Event ${ev.code} loaded: ${Object.keys(ev.teams).length} teams, ${ev.matches.length} matches`);
-    toast(`Event ${ev.code} loaded`, 'ok');
+    const cloudSet = applyCloudConfig(obj.c);
+    logScan(`Event ${ev.code} loaded: ${Object.keys(ev.teams).length} teams, ${ev.matches.length} matches${cloudSet ? ' · cloud backup set up' : ''}`);
+    toast(`Event ${ev.code} loaded${cloudSet ? ' · cloud backup on' : ''}`, 'ok');
+    syncSoon();
+  } else if (obj.k === 'cfg') {
+    const cloudSet = applyCloudConfig(obj.c);
+    logScan(cloudSet ? 'Cloud backup set up' : 'Cloud backup was already set up');
+    toast(cloudSet ? 'Cloud backup is on' : 'Cloud backup already set up', 'ok');
   } else {
     logScan('Unknown QR content', 'err');
   }
@@ -899,6 +991,7 @@ const actions = {
   // Event
   evSrc: el => { ui.evSrc = el.dataset.v; ui.found = []; render(); },
   findMine: async () => {
+    if (!S().ourTeam) return toast('Enter your team number above first.', 'err');
     ui.busy = 'Looking up events…'; render();
     try {
       ui.found = await ftcscoutTeamEvents(S().season, S().ourTeam);
@@ -978,7 +1071,7 @@ const actions = {
   sendEvent: () => {
     const ev = activeEvent();
     if (!ev) return;
-    showQR(`Event ${ev.code}`, { k: 'evt', d: ev });
+    showQR(`Event ${ev.code}`, { k: 'evt', d: ev, c: cloudCfgForQR() });
   },
   team: el => teamModal(Number(el.dataset.team)),
   pick: el => { setPick(Number(el.dataset.team), el.dataset.v); teamModal(Number(el.dataset.team)); render(); },
@@ -1053,6 +1146,7 @@ const actions = {
     state.records[rec.id] = rec;
     delete state.sent[rec.id];
     persist('records', 'sent');
+    syncSoon();
     toast(`Saved match ${rec.mt} · ${rec.tm}`, 'ok');
     ui.mf = newMatchForm(rec.mt + 1);
     window.scrollTo(0, 0);
@@ -1080,6 +1174,7 @@ const actions = {
     state.records[rec.id] = rec;
     delete state.sent[rec.id];
     persist('records', 'sent');
+    syncSoon();
     toast(`Saved pit entry for ${rec.tm}`, 'ok');
     ui.pf = blankPit(); ui.pf.ev = ev;
     window.scrollTo(0, 0);
@@ -1096,6 +1191,7 @@ const actions = {
     const r = state.records[el.dataset.id];
     if (!r || !confirm(`Delete this ${r.t === 'm' ? 'match' : 'pit'} record for ${r.tm}? This only deletes it on this iPad.`)) return;
     deleteRecord(r.id);
+    syncSoon();
     render();
   },
 
@@ -1123,6 +1219,23 @@ const actions = {
     closeModal();
     toast(`Marked ${ids.length} records as sent`, 'ok');
     render();
+  },
+  cloudSync: async () => {
+    if (!navigator.onLine) return toast('This iPad is offline. It will sync when it reconnects.');
+    const res = await syncNow('manual');
+    if (res && res.error) toast(res.error, 'err');
+    else if (res && !res.skipped) toast(res.changed ? `Synced · ${res.changed} changes downloaded` : 'Synced ✓', 'ok');
+  },
+  cloudToggle: () => {
+    state.settings.cloudOn = S().cloudOn === false;
+    persist('settings');
+    if (state.settings.cloudOn) syncSoon(300);
+    render();
+  },
+  shareCloud: () => {
+    const c = cloudCfgForQR();
+    if (!c) return toast('Enter the web app URL and team key first.', 'err');
+    showQR('Cloud backup setup', { k: 'cfg', c });
   },
   scanStart: () => startScanner(),
   scanStop: () => stopScanner(),
@@ -1170,6 +1283,8 @@ document.addEventListener('input', e => {
     state.settings[el.dataset.set] = val;
     persist('settings');
     if (el.dataset.set === 'ourTeam') renderHeader();
+    if (el.dataset.set === 'cloudUrl') ui.cloudUrlChanged = true;
+    if (el.dataset.set === 'cloudUrl' || el.dataset.set === 'cloudKey') refreshCloudButtons();
   } else if (el.dataset.mf && ui.mf) {
     ui.mf[el.dataset.mf] = intType ? (Number(val) || 0) : val;
   } else if (el.dataset.pf && ui.pf) {
@@ -1209,7 +1324,7 @@ document.addEventListener('change', async e => {
     ui.mf = null; ui.pf = null; ui.editEvent = false;
     render();
   } else if (el.dataset.change === 'filter') {
-    ui.filter = el.value; render();
+    ui.filter = el.value; renderSoon();
   } else if (el.dataset.change === 'hideDnp') {
     ui.hideDnp = el.checked; render();
   } else if (el.dataset.w) {
@@ -1217,11 +1332,16 @@ document.addEventListener('change', async e => {
   } else if (el.dataset.mf === 'mt' && ui.mf) {
     ui.mf.mt = Math.max(1, Number(el.value) || 1);
     if (!ui.mf.id) applySlot(ui.mf);
-    render();
+    renderSoon();
   } else if (el.dataset.mf === 'tm' || el.dataset.pf === 'tm') {
-    render();
+    renderSoon();
+  } else if (el.dataset.set === 'cloudUrl' || el.dataset.set === 'cloudKey') {
+    if (ui.cloudUrlChanged) { ui.cloudUrlChanged = false; resetCloudProgress(); }
+    cloud.lastErr = '';
+    refreshCloudButtons();
+    syncSoon(300);
   } else if (el.dataset.set === 'season' || el.dataset.set === 'symmetry' || el.dataset.set === 'ourTeam') {
-    render();
+    renderSoon();
   }
 });
 
@@ -1239,7 +1359,8 @@ document.addEventListener('visibilitychange', () => { if (document.hidden) stopS
 // ---------------------------------------------------------------- service worker (offline)
 
 if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
-  navigator.serviceWorker.register('./sw.js').then(reg => {
+  navigator.serviceWorker.register('./sw.js', { updateViaCache: 'none' }).then(reg => {
+    if (!reg) return;
     const watch = w => w && w.addEventListener('statechange', () => {
       if (w.state === 'installed' && navigator.serviceWorker.controller) {
         ui.waitingSW = w;
@@ -1255,9 +1376,20 @@ if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.
 
 if (navigator.storage && navigator.storage.persist) navigator.storage.persist().catch(() => {});
 
+// Cloud sync: refresh the header, and redraw read-only screens when other iPads' data arrives
+cloud.onChange = changed => {
+  renderHeader();
+  if (!changed) return;
+  const typing = document.activeElement && /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName);
+  const modalOpen = !$('#modal').classList.contains('hidden');
+  if (['teams', 'partners', 'event'].includes(ui.tab) && !typing && !modalOpen) render();
+};
+setInterval(renderHeader, 30000);
+
 // First run: start on Scout if everything is set up
 if (activeEvent() && S().scoutName) ui.tab = 'scout';
 render();
+startCloud();
 
 // Exposed for automated tests
-window.__hs = { state, ui, actions, render, onScanText };
+window.__hs = { state, ui, actions, render, onScanText, cloud, syncNow };

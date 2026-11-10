@@ -193,6 +193,13 @@ button.listitem { justify-content: flex-start; }
 .pill.low, .pill.pit { background: var(--line); color: var(--muted); }
 .topbar .pill { background: #ffffff1a; color: var(--bar-ink); min-height: 34px; padding: .3rem .8rem; font-size: .85rem; }
 .topbar .pill.warn { background: var(--honey); color: var(--honey-ink); }
+.topbar .pill.cloud.ok { background: #1d8a4e33; color: #7be0a6; }
+.topbar .pill.cloud.err { background: #b4231833; color: #ff9b91; }
+.topbar .pill.cloud.busy, .topbar .pill.cloud.off { background: #ffffff1a; color: #d8d1c3; }
+.pill.err { background: #fde4e4; color: var(--err); }
+.pill.busy { background: var(--blue-soft); color: var(--blue); }
+.pill.off { background: var(--line); color: var(--muted); }
+.cloudstatus { margin: .3rem 0 .2rem; font-weight: 600; line-height: 1.6; }
 .dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin: 0 .3rem; }
 .dot.red { background: var(--red); } .dot.blue { background: var(--blue); }
 .banner { padding: .7rem .9rem; border-radius: 10px; margin: 0 0 1rem; font-weight: 600; }

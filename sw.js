@@ -1,5 +1,5 @@
 // Offline cache. Bump VERSION whenever you upload changed files so iPads pick up the update.
-const VERSION = 'hive-scout-v1.1.0';
+const VERSION = 'hive-scout-v1.1.1';
 const FILES = [
   './',
   './index.html',
@@ -20,7 +20,8 @@ const FILES = [
 ];
 
 self.addEventListener('install', event => {
-  event.waitUntil(caches.open(VERSION).then(cache => cache.addAll(FILES)));
+  // cache: 'reload' skips the browser's HTTP cache, so a new version never stores stale copies of old files
+  event.waitUntil(caches.open(VERSION).then(cache => cache.addAll(FILES.map(u => new Request(u, { cache: 'reload' })))));
 });
 
 self.addEventListener('activate', event => {
