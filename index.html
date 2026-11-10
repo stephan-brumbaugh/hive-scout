@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Hive Scout</title>
+<meta name="description" content="Offline FTC BIOBUZZ scouting for iPad with QR-code sync.">
+<meta name="theme-color" content="#1d1a14">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Hive Scout">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" type="image/png" sizes="192x192" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+<link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+<header class="topbar">
+  <div class="brand">
+    <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><path d="M12 2.5l8.2 4.75v9.5L12 21.5l-8.2-4.75v-9.5z" fill="var(--honey)" stroke="currentColor" stroke-width="1.4"/><path d="M12 8l3.5 2v4L12 16l-3.5-2v-4z" fill="currentColor" opacity=".85"/></svg>
+    <span>Hive Scout</span>
+  </div>
+  <button class="pill" id="hdrEvent" data-act="tab" data-tab="event">No event</button>
+  <div class="hdr-right">
+    <span class="net" id="hdrNet" title="Connection"></span>
+    <button class="pill warn hidden" id="hdrUnsent" data-act="tab" data-tab="sync"></button>
+  </div>
+</header>
+
+<div id="updateBar" class="update hidden">A new version is ready. <button data-act="applyUpdate">Reload</button></div>
+
+<main id="view" tabindex="-1"></main>
+
+<nav class="tabbar" role="tablist">
+  <button data-act="tab" data-tab="event" role="tab"><svg viewBox="0 0 24 24"><path d="M4 5h16v14H4zM4 9h16M9 5V3M15 5V3" /></svg><span>Event</span></button>
+  <button data-act="tab" data-tab="scout" role="tab"><svg viewBox="0 0 24 24"><path d="M6 3h9l3 3v15H6zM9 9h6M9 13h6M9 17h4" /></svg><span>Scout</span></button>
+  <button data-act="tab" data-tab="sync" role="tab"><svg viewBox="0 0 24 24"><path d="M4 4h6v6H4zM14 4h6v6h-6zM4 14h6v6H4zM14 14h2v2h-2zM18 18h2v2h-2zM14 18h2M18 14h2" /></svg><span>Sync</span></button>
+  <button data-act="tab" data-tab="teams" role="tab"><svg viewBox="0 0 24 24"><path d="M4 6h16M4 12h16M4 18h16" /></svg><span>Teams</span></button>
+  <button data-act="tab" data-tab="partners" role="tab"><svg viewBox="0 0 24 24"><path d="M8 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM16 11a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM2 20c0-3 3-5 6-5s6 2 6 5M12 20c0-3 3-5 6-5s4 1.5 4 4" /></svg><span>Partners</span></button>
+</nav>
+
+<div id="modal" class="modal hidden" role="dialog" aria-modal="true"></div>
+<div id="toast" class="toast hidden" role="status"></div>
+<input type="file" id="fileInput" accept=".json,application/json,text/plain" class="hidden">
+
+<script src="lib/qrcode.min.js"></script>
+<script src="lib/jsQR.min.js"></script>
+<script type="module" src="js/app.js"></script>
+</body>
+</html>
