@@ -6,7 +6,7 @@ Hive Scout is a scouting app for the 2026–27 FTC season (BIOBUZZ). It runs in 
 - Each scout iPad sends its data to a "hub" iPad or laptop by showing QR codes on screen.
 - The hub ranks every team by how well they would pair with **your** robot.
 
-There is no server, no account, and no app store. All data stays on your devices.
+There is no app store and no login for scouts. Data is saved on each iPad first. Add the optional Google Sheet backup (section 6) and every iPad also syncs with the Sheet on its own whenever it's online.
 
 ---
 
@@ -100,16 +100,36 @@ You can change all thresholds and the tip model on **Event → Game & scoring se
 
 **Field symmetry:** starting tiles are recorded as seen from the audience. A6 is the top-left tile on screen, and row 1 is nearest the audience. To compare a red start with a blue start, the app flips the blue half onto the red half. Check Figure 9-2 in the manual, then choose *Mirror* or *Rotated 180°* to match the real field.
 
-## 6. Backups and exports
+## 6. Automatic cloud backup to a Google Sheet (optional)
+
+Whenever an iPad is online, it uploads its new records to a Google Sheet and downloads every other iPad's records. It does this by itself, with no taps. With no internet the app keeps working, and the iPad catches up the next time it's online. QR codes are then only needed when nobody has internet.
+
+**One-time setup, on a computer (about 5 minutes):**
+
+1. Open the **Hive Scout Data** Google Sheet, or create a blank one. Go to **Extensions → Apps Script**.
+2. Delete the sample code. Paste in all of `tools/hive-scout-sync.gs`.
+3. Change `TEAM_KEY` at the top to your own password. Use only letters, numbers and dashes. Click **Save**.
+4. Pick **setup** in the function menu at the top and click **Run**. Approve the permissions; the script can only use this Sheet.
+5. Click **Deploy → New deployment**. Click the gear icon and pick **Web app**. Set **Execute as: Me** and **Who has access: Anyone**. Click **Deploy** and copy the **Web app URL** (it ends in `/exec`).
+6. Open Hive Scout on that computer, using the same web address as the iPads. Go to **Sync → Cloud backup** and paste the URL and the team key. The status should change to **Synced**.
+7. On each iPad, go to **Sync → Start camera** and scan the computer's **Share cloud setup by QR**. **Share event by QR** also includes the cloud setup.
+
+The Sheet gets two readable tabs, **Matches** and **Pits**, that you can sort, filter or chart. They are rebuilt on every change, so don't type in them. The hidden tabs `_records` and `_events` hold the sync data; don't edit those either.
+
+**If "Anyone" isn't offered** in step 5, your school Google account doesn't allow outside access. Copy the Sheet and script into a personal Google account and deploy it there instead. The iPads don't need to sign in to anything.
+
+**Header badge:** `☁ Synced`, `☁ 3 waiting` (saved on the iPad, will upload when online) or `☁ Problem`. Tap the badge to see details on the Sync tab.
+
+## 7. Backups and exports
 
 - Make a backup at the end of every event day: **Sync → Save backup**, then save to Files or AirDrop to a laptop. iPadOS can delete website data that hasn't been used for a while.
 - To restore a backup, or merge in data from another device, use **Sync → Import**. Merging never deletes anything.
 - **Match data CSV / Pit data CSV** open in Excel or Google Sheets.
 
-## 7. Updating the app
+## 8. Updating the app
 
 1. Edit or replace the files in your GitHub repository.
-2. Change the `VERSION` line at the top of `sw.js` (for example `v1.0.1`). This tells the iPads that a new version exists.
+2. Change the `VERSION` line at the top of `sw.js` (for example `v1.1.1`). This tells the iPads that a new version exists.
 3. The next time each iPad opens the app while online, it shows *A new version is ready → Reload*.
 
 Each record's field order is the format used in the QR codes. If you add fields, add them only at the end of the lists in `js/schema.js`, so iPads running older and newer versions can still exchange data.
@@ -125,9 +145,11 @@ js/store.js            on-device storage
 js/api.js              FTCScout, FIRST API, manual and file import
 js/qr.js               QR splitting, drawing and camera scanning
 js/analysis.js         team stats and partner compatibility
+js/cloud.js            automatic two-way sync with the Google Sheet
 sw.js                  offline cache
 lib/                   qrcode-generator (MIT) and jsQR (Apache-2.0)
 tools/ftc_event_download.py   FIRST API → event file (laptop)
+tools/hive-scout-sync.gs      Google Apps Script for the cloud backup Sheet
 ```
 
 Hive Scout is an unofficial tool. It is not affiliated with FIRST®, FTCScout or RTX. BIOBUZZ and FIRST Tech Challenge are trademarks of FIRST.
