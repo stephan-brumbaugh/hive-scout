@@ -26,7 +26,7 @@ const MATCH_COLS = [
   ['ns', 'No show'], ['st', 'Start tile'], ['lv', 'AUTO leave'], ['aM', 'AUTO HIVE made'], ['aX', 'AUTO HIVE missed'],
   ['aP', 'AUTO park'], ['aS', 'AUTO sources'], ['tM', 'TELEOP HIVE made'], ['tX', 'TELEOP HIVE missed'],
   ['iS', 'Intake sources'], ['fN', 'NECTAR into FLOWER'], ['fP', 'POLLEN into FLOWER'], ['gd', 'Into GARDEN'],
-  ['pk', 'Park'], ['df', 'Defense (0-2)'], ['dr', 'Driver (1-5)'], ['br', 'Issues'], ['mn', 'Minor fouls'],
+  ['pk', 'Park'], ['df', 'Defense (0-2)'], ['dr', 'Driver (1-7)'], ['br', 'Issues'], ['mn', 'Minor fouls'],
   ['mj', 'Major fouls'], ['cd', 'Card (0/1/2)'], ['nt', 'Notes'], ['id', 'Record ID'],
 ];
 const PIT_COLS = [

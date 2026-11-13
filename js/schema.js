@@ -28,7 +28,7 @@ export const MATCH_FIELDS = [
   ['pk', 'i', 'Park'],
   // OVERALL
   ['df', 'i', 'Defense (0-2)'],
-  ['dr', 'i', 'Driver (1-5)'],
+  ['dr', 'i', 'Driver (1-7)'],
   ['br', 's', 'Issues'],             // flags: D dead/disconnect, B broke, T tipped over
   ['mn', 'i', 'Minor fouls'],
   ['mj', 'i', 'Major fouls'],

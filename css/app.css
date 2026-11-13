@@ -119,6 +119,7 @@ button.danger { color: var(--err); border-color: color-mix(in srgb, var(--err) 4
 .seg button.on { background: var(--ink); color: var(--card); }
 .seg.wide { width: 100%; margin-bottom: 1rem; }
 .seg.wide button { flex: 1; min-height: 52px; }
+.seg.scale button { min-width: 44px; padding-left: .4rem; padding-right: .4rem; }
 .seg.alli button.on:first-child { background: var(--red); color: #fff; }
 .seg.alli button.on:last-child { background: var(--blue); color: #fff; }
 .card > .seg { margin-bottom: .75rem; }

@@ -7,7 +7,7 @@ import { encodeMessage, Assembler, drawQR, Scanner } from './qr.js';
 import { observations, teamStats, eventContext, compatibility, tileXY } from './analysis.js';
 import { cloud, cloudConfigured, cloudActive, cloudPending, syncNow, syncSoon, startCloud, resetCloudProgress } from './cloud.js';
 
-export const APP_VERSION = '1.1.1'; // keep in step with VERSION in sw.js
+export const APP_VERSION = '1.1.2'; // keep in step with VERSION in sw.js
 const S = () => state.settings;
 const $ = (sel, root = document) => root.querySelector(sel);
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -532,7 +532,7 @@ function matchForm(ev) {
     <h2>Overall</h2>
     <div class="grid2">
       <div><span class="flabel">Defense played</span>${choice('mf', 'df', LABELS.df.map((l, i) => [i, l]))}</div>
-      <div><span class="flabel">Driver skill</span>${choice('mf', 'dr', [[1, '1'], [2, '2'], [3, '3'], [4, '4'], [5, '5']])}</div>
+      <div><span class="flabel">Driver skill</span>${choice('mf', 'dr', [1, 2, 3, 4, 5, 6, 7].map(n => [n, String(n)]), 'scale')}</div>
     </div>
     <span class="flabel">Problems</span>
     ${flags('mf', 'br', LABELS.br)}
