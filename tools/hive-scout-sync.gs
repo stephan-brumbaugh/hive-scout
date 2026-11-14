@@ -10,6 +10,14 @@
  *     Click Deploy and copy the Web app URL (ends in /exec).
  *  5. In Hive Scout (Sync tab > Cloud backup) enter that URL and the same TEAM_KEY.
  *
+ * UPDATING THIS SCRIPT LATER: paste the new version, Save, Run "setup" once (approve any new permission),
+ * then Deploy > Manage deployments > pencil icon > Version: New version > Deploy. The URL stays the same.
+ *
+ * OFFICIAL FIRST DATA (league roster, league rankings, meet results): register for a free FTC Events API
+ * key at https://ftc-events.firstinspires.org/services/API, then in Apps Script open Project Settings (gear)
+ * > Script properties > Add: FIRST_USER = your API username, FIRST_KEY = your authorization key. Save.
+ * No redeploy is needed after adding the key.
+ *
  * Tabs it creates: Matches and Pits (readable copies you can sort/filter — they are rebuilt on every
  * change, so don't type in them), and _records / _events (the sync data the iPads use — don't edit).
  */
@@ -17,6 +25,8 @@
 const TEAM_KEY = 'PUT-YOUR-TEAM-KEY-HERE';
 
 const MAX_PULL = 600; // records returned per request
+const API_VERSION = 2;
+const FIRST_BASE = 'https://ftc-api.firstinspires.org/v2.0';
 
 const REC_HEAD = ['id', 'seq', 'ts', 'type', 'event', 'team', 'match', 'device', 'deleted', 'json'];
 const EV_HEAD = ['code', 'seq', 'upd', 'name', 'json'];
@@ -55,7 +65,7 @@ function setup() {
 }
 
 function doGet() {
-  return json_({ ok: true, app: 'hive-scout-sync', version: 1, message: 'Hive Scout sync is running. Enter this URL in the app.' });
+  return json_({ ok: true, app: 'hive-scout-sync', message: 'Hive Scout sync is running. Enter this URL in the app.' });
 }
 
 function doPost(e) {
@@ -67,6 +77,13 @@ function doPost(e) {
   }
   if (TEAM_KEY === 'PUT-YOUR-TEAM-KEY-HERE') return json_({ ok: false, error: 'Set TEAM_KEY in the Apps Script first.' });
   if (!req || req.key !== TEAM_KEY) return json_({ ok: false, error: 'Wrong team key' });
+  if (req.action === 'league') {
+    try {
+      return json_(leagueData_(req));
+    } catch (err) {
+      return json_({ ok: false, error: String((err && err.message) || err) });
+    }
+  }
   const lock = LockService.getScriptLock();
   if (!lock.tryLock(25000)) return json_({ ok: false, error: 'Sheet is busy, will retry' });
   try {
@@ -89,9 +106,24 @@ function sync_(req) {
   const startSeq = seq;
   let since = Number(req.since) || 0;
   if (since > seq) since = 0; // the Sheet was reset: send everything again
+  // --- league roster (shared by all iPads; newest wins)
+  let league = null;
+  try { league = JSON.parse(props.getProperty('league') || 'null'); } catch (err) { league = null; }
+  if (req.league && Number(req.league.upd) > Number((league && league.upd) || 0)) {
+    league = req.league;
+    try {
+      props.setProperty('league', JSON.stringify(league));
+    } catch (err) { // property too large: keep numbers, drop names
+      const slim = Object.assign({}, league, { teams: {} });
+      Object.keys(league.teams || {}).forEach(t => { slim.teams[t] = ''; });
+      props.setProperty('league', JSON.stringify(slim));
+    }
+  }
+  const leagueOut = league && Number(league.upd) > (Number(req.leagueUpd) || 0) ? league : null;
+
   const nothingToWrite = !(req.records || []).length && !(req.deletes || []).length && !(req.events || []).length;
   if (nothingToWrite && since === seq) {
-    return { ok: true, pushed: 0, deleted: 0, records: [], events: [], cursor: seq, more: false };
+    return { ok: true, pushed: 0, deleted: 0, records: [], events: [], cursor: seq, more: false, league: leagueOut };
   }
 
   // --- records
@@ -172,7 +204,7 @@ function sync_(req) {
   }).filter(Boolean);
   const cursor = more ? Number(page[page.length - 1][1]) : seq;
 
-  return { ok: true, pushed: pushed, deleted: deleted, records: out, events: events, cursor: cursor, more: more, total: rows.length };
+  return { ok: true, pushed: pushed, deleted: deleted, records: out, events: events, cursor: cursor, more: more, total: rows.length, league: leagueOut };
 }
 
 function recRow_(r, seq, device) {
@@ -208,6 +240,131 @@ function writeReadable_(sheet, cols, recs) {
     ensureRows_(sheet, values.length + 1);
     sheet.getRange(2, 1, values.length, cols.length).setValues(values);
   }
+}
+
+// ---------------------------------------------------------------- official FIRST data (league, rankings, meets)
+
+function firstCreds_() {
+  const p = PropertiesService.getScriptProperties();
+  return { user: String(p.getProperty('FIRST_USER') || '').trim(), key: String(p.getProperty('FIRST_KEY') || '').trim() };
+}
+
+// GET from FIRST's FTC Events API, cached so repeated taps don't hammer FIRST.
+function firstGet_(path, ttlSeconds) {
+  const cache = CacheService.getScriptCache();
+  const ck = ('first:' + path).slice(0, 240);
+  const hit = ttlSeconds ? cache.get(ck) : null;
+  if (hit) return JSON.parse(hit);
+  const c = firstCreds_();
+  const res = UrlFetchApp.fetch(FIRST_BASE + path, {
+    headers: { Authorization: 'Basic ' + Utilities.base64Encode(c.user + ':' + c.key), Accept: 'application/json' },
+    muteHttpExceptions: true,
+  });
+  const code = res.getResponseCode();
+  if (code === 401) throw new Error('FIRST rejected the API username/key. Check FIRST_USER and FIRST_KEY in Project Settings > Script properties.');
+  if (code === 404 || code === 204) return null;
+  if (code >= 300) throw new Error('FIRST API error ' + code + ' for ' + path);
+  const text = res.getContentText();
+  if (ttlSeconds && text.length < 95000) {
+    try { cache.put(ck, text, ttlSeconds); } catch (err) { /* too big to cache */ }
+  }
+  return text ? JSON.parse(text) : null;
+}
+
+function leagueData_(req) {
+  const creds = firstCreds_();
+  if (!creds.user || !creds.key) {
+    return { ok: false, error: 'nokey', message: 'Add FIRST_USER and FIRST_KEY in Apps Script > Project Settings > Script properties.' };
+  }
+  const season = Number(req.season) || 2026;
+  const team = Number(req.team) || 0;
+  let region = String(req.region || '').trim();
+  const wanted = String(req.league || '').trim();
+  const out = { ok: true, kind: 'league', season: season, fetched: Date.now() };
+
+  if (!region) {
+    if (!team) return { ok: false, error: 'Enter your team number in the app first.' };
+    const t = firstGet_('/' + season + '/teams?teamNumber=' + team, 21600);
+    const info = t && t.teams && t.teams[0];
+    if (!info) return { ok: false, error: 'FIRST has no ' + season + ' record for team ' + team + '.' };
+    region = String(info.homeRegion || '');
+    if (!region) return { ok: false, error: 'FIRST does not list a home region for team ' + team + '.' };
+  }
+
+  const ls = firstGet_('/' + season + '/leagues?regionCode=' + encodeURIComponent(region), 21600);
+  const leagues = ((ls && ls.leagues) || []).map(l => ({
+    code: String(l.code || l.leagueCode || ''), name: String(l.name || l.code || ''), parent: String(l.parentLeagueCode || ''),
+  })).filter(l => l.code);
+  out.leagues = leagues;
+  const memberCache = {};
+  const members = lc => {
+    if (!memberCache[lc]) {
+      const m = firstGet_('/' + season + '/leagues/members/' + encodeURIComponent(region) + '/' + encodeURIComponent(lc), 21600);
+      memberCache[lc] = (((m && (m.members || m.teams)) || [])).map(x => Number(typeof x === 'object' ? x.teamNumber : x)).filter(Boolean);
+    }
+    return memberCache[lc];
+  };
+  let mine = null;
+  if (wanted) {
+    mine = leagues.filter(l => l.code === wanted)[0] || { code: wanted, name: wanted, parent: '' };
+  } else {
+    const parents = {};
+    leagues.forEach(l => { if (l.parent) parents[l.parent] = true; });
+    const ordered = leagues.slice().sort((a, b) => (parents[a.code] ? 1 : 0) - (parents[b.code] ? 1 : 0)); // most specific first
+    for (let i = 0; i < ordered.length && !mine; i++) if (members(ordered[i].code).indexOf(team) >= 0) mine = ordered[i];
+  }
+  if (!mine) {
+    out.ok = false;
+    out.error = 'Could not tell which ' + region + ' league team ' + team + ' is in.';
+    out.region = region;
+    return out;
+  }
+  out.league = { region: region, code: mine.code, name: mine.name, members: members(mine.code) };
+
+  const rk = firstGet_('/' + season + '/leagues/rankings/' + encodeURIComponent(region) + '/' + encodeURIComponent(mine.code), 900);
+  out.rankings = ((rk && rk.rankings) || []).map(slimRank_);
+
+  const today = new Date().toISOString().slice(0, 10);
+  out.meets = leagueEvents_(season, region, mine.code, team)
+    .filter(e => String(e.dateStart || '').slice(0, 10) <= today)
+    .map(e => {
+      const finished = String(e.dateEnd || e.dateStart || '').slice(0, 10) < today;
+      const r = firstGet_('/' + season + '/rankings/' + encodeURIComponent(e.code), finished ? 21600 : 600);
+      return { code: e.code, name: e.name, date: String(e.dateStart || '').slice(0, 10), type: e.typeName, rankings: ((r && r.rankings) || []).map(slimRank_) };
+    });
+  return out;
+}
+
+// League meets + league tournament for this league, plus any league-type event our team attended (cross-league meets).
+function leagueEvents_(season, region, code, team) {
+  const cache = CacheService.getScriptCache();
+  const ck = ('levents:' + season + ':' + region + ':' + code + ':' + team).slice(0, 240);
+  const hit = cache.get(ck);
+  if (hit) return JSON.parse(hit);
+  const slim = e => ({ code: String(e.code), name: String(e.name || e.code), dateStart: e.dateStart, dateEnd: e.dateEnd, typeName: String(e.typeName || e.type || '') });
+  const byCode = {};
+  const all = firstGet_('/' + season + '/events', 0);
+  ((all && all.events) || []).forEach(e => {
+    const lc = String(e.leagueCode || '');
+    const rc = String(e.regionCode || '');
+    if ((lc === code || lc === region + '/' + code) && (!rc || rc === region)) byCode[e.code] = slim(e);
+  });
+  if (team) {
+    const mineEv = firstGet_('/' + season + '/events?teamNumber=' + team, 3600);
+    ((mineEv && mineEv.events) || []).forEach(e => { if (/league/i.test(String(e.typeName || e.type || ''))) byCode[e.code] = slim(e); });
+  }
+  const list = Object.keys(byCode).map(k => byCode[k]).sort((a, b) => String(a.dateStart).localeCompare(String(b.dateStart)));
+  try { cache.put(ck, JSON.stringify(list), 21600); } catch (err) { /* ignore */ }
+  return list;
+}
+
+function slimRank_(r) {
+  return {
+    rank: Number(r.rank) || 0, team: Number(r.teamNumber) || 0,
+    rs: r.sortOrder1 === undefined || r.sortOrder1 === null ? null : Number(r.sortOrder1),
+    w: Number(r.wins) || 0, l: Number(r.losses) || 0, t: Number(r.ties) || 0,
+    played: Number(r.matchesPlayed) || 0, avg: r.qualAverage === undefined || r.qualAverage === null ? null : Number(r.qualAverage),
+  };
 }
 
 // ---------------------------------------------------------------- helpers
@@ -253,5 +410,6 @@ function isTrue_(v) {
 }
 
 function json_(obj) {
+  obj.version = API_VERSION;
   return ContentService.createTextOutput(JSON.stringify(obj)).setMimeType(ContentService.MimeType.JSON);
 }

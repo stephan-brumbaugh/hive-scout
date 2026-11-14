@@ -10,6 +10,8 @@ const K = {
   cloudSent: 'hs.cloudSent',      // record id -> ts last uploaded to the Google Sheet
   cloudSentEv: 'hs.cloudSentEv',  // event code -> upd last uploaded
   cloudDel: 'hs.cloudDel',        // record id -> time deleted here, waiting to be deleted in the Sheet
+  league: 'hs.league',            // our league roster {name, region, code, teams: {num: name}, src, upd}
+  official: 'hs.official',        // downloaded official data (FTCScout OPR, FIRST rankings / meet results)
 };
 
 export const DEFAULT_SETTINGS = {
@@ -34,6 +36,8 @@ export const DEFAULT_SETTINGS = {
   cloudKey: '',               // TEAM_KEY from the script
   cloudOn: true,
   cloudCursor: 0,             // last change number pulled from the Sheet
+  cloudLeagueUpd: 0,          // league roster version the Sheet already has
+  show: { opr: true, rank: true, meets: true }, // official-data columns shown on the League tab
 };
 
 let storageOK = true;
@@ -65,6 +69,7 @@ export const state = {
     ...DEFAULT_SETTINGS,
     ...savedSettings,
     weights: { ...DEFAULT_SETTINGS.weights, ...(savedSettings.weights || {}) },
+    show: { ...DEFAULT_SETTINGS.show, ...(savedSettings.show || {}) },
   },
   events: load(K.events, {}),
   records: load(K.records, {}),
@@ -73,7 +78,45 @@ export const state = {
   cloudSent: load(K.cloudSent, {}),
   cloudSentEv: load(K.cloudSentEv, {}),
   cloudDel: load(K.cloudDel, {}),
+  league: load(K.league, null),
+  official: load(K.official, null) || emptyOfficial(),
 };
+
+export function emptyOfficial() {
+  return { opr: {}, oprAt: 0, rankings: {}, rankAt: 0, meets: [], meetsAt: 0, leagueInfo: null, firstErr: '', scoutErr: '' };
+}
+
+// ---------------------------------------------------------------- league & event scope
+
+export function hasLeague() {
+  return !!(state.league && Object.keys(state.league.teams || {}).length);
+}
+
+export function inLeague(team) {
+  team = Number(team);
+  if (team && team === Number(state.settings.ourTeam)) return true;
+  return hasLeague() && Object.prototype.hasOwnProperty.call(state.league.teams, team);
+}
+
+// 'league' = show only our league's teams (league meets / league tournament); 'all' = everyone.
+export function eventScope(ev) {
+  if (!ev || !hasLeague()) return 'all';
+  if (ev.scope === 'league' || ev.scope === 'all') return ev.scope;
+  if (ev.type) return /league/i.test(ev.type) ? 'league' : 'all';
+  const teams = Object.keys(ev.teams || {});
+  if (!teams.length) return 'league';
+  const share = teams.filter(t => inLeague(t)).length / teams.length;
+  return share >= 0.4 ? 'league' : 'all';
+}
+
+export function inScope(team, ev) {
+  return eventScope(ev) === 'all' || inLeague(team);
+}
+
+export function saveLeague(league) {
+  state.league = league ? { ...league, upd: league.upd || Date.now() } : null;
+  persist('league');
+}
 
 if (!state.settings.deviceId) {
   const letters = 'abcdefghjkmnpqrstuvwxyz', abc = letters + '23456789';
@@ -161,7 +204,7 @@ export function setPick(team, flag, ev = state.settings.activeEvent) {
 }
 
 export function backupObject() {
-  const { ftcUser, ftcKey, cloudKey, cloudUrl, cloudCursor, ...settings } = state.settings;
+  const { ftcUser, ftcKey, cloudKey, cloudUrl, cloudCursor, cloudLeagueUpd, ...settings } = state.settings;
   return {
     hsBackup: 1,
     exported: new Date().toISOString(),
@@ -169,6 +212,7 @@ export function backupObject() {
     events: state.events,
     records: state.records,
     picks: state.picks,
+    league: state.league,
   };
 }
 
@@ -184,6 +228,7 @@ export function mergeBackup(obj) {
   for (const [ev, teams] of Object.entries(obj.picks || {})) {
     state.picks[ev] = { ...(state.picks[ev] || {}), ...teams };
   }
+  if (obj.league && (!state.league || (obj.league.upd || 0) > (state.league.upd || 0))) state.league = obj.league;
   if (!state.settings.activeEvent && obj.settings && obj.settings.activeEvent) {
     state.settings.activeEvent = obj.settings.activeEvent;
   }
@@ -197,5 +242,6 @@ export function clearAll() {
   state.settings = { ...DEFAULT_SETTINGS, weights: { ...DEFAULT_SETTINGS.weights }, deviceId: keepId };
   state.events = {}; state.records = {}; state.picks = {}; state.sent = {};
   state.cloudSent = {}; state.cloudSentEv = {}; state.cloudDel = {};
+  state.league = null; state.official = emptyOfficial();
   persist();
 }

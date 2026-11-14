@@ -38,7 +38,8 @@ export function observations(records) {
     o.nt = list.map(r => r.nt).filter(Boolean).join(' | ');
     obs.push(o);
   }
-  return obs.sort((a, b) => a.mt - b.mt);
+  // oldest first: by when it was scouted, then by match number
+  return obs.sort((a, b) => (a.ts - b.ts) || (a.mt - b.mt));
 }
 
 function obsPoints(o, s) {
@@ -58,11 +59,33 @@ function pitPseudo(p) {
   };
 }
 
-export function teamStats(team, obsAll, pit, s) {
+// Events in the order we scouted them (oldest first).
+export function eventOrder(records) {
+  const first = {};
+  for (const r of records) if (r.t === 'm') first[r.ev] = Math.min(first[r.ev] ?? Infinity, r.ts || 0);
+  return Object.keys(first).sort((a, b) => first[a] - first[b]);
+}
+
+// Most recent meet counts 1, the one before 0.7, then 0.49… robots improve during a season.
+export function recencyWeights(order, decay = 0.7) {
+  const w = {};
+  order.forEach((ev, i) => { w[ev] = Math.pow(decay, order.length - 1 - i); });
+  return w;
+}
+
+// opts.evW: {eventCode: weight} for season views; opts.order: event order for per-meet breakdown.
+export function teamStats(team, obsAll, pit, s, opts = {}) {
   let obs = obsAll.filter(o => o.tm === team);
   const claimed = !obs.length && !!pit;
   const use = claimed ? [pitPseudo(pit)] : obs;
   const pts = use.map(o => obsPoints(o, s));
+  const W = use.map(o => (opts.evW && o.ev in opts.evW ? opts.evW[o.ev] : 1));
+  const mean = (vals, w = W) => {
+    let sw = 0, sv = 0;
+    vals.forEach((v, i) => { const wi = w[i] ?? 1; sw += wi; sv += wi * v; });
+    return sw ? sv / sw : 0;
+  };
+  const rated = use.map((o, i) => [o, W[i]]).filter(([o]) => o.dr > 0);
   const st = {
     team, n: obs.length, claimed, pit, obs: use,
     autoMade: mean(use.map(o => o.aM)),
@@ -76,7 +99,7 @@ export function teamStats(team, obsAll, pit, s) {
     flowerP: mean(use.map(o => o.fP)),
     garden: mean(use.map(o => o.gd)),
     defense: mean(use.map(o => o.df)),
-    driver: mean(use.filter(o => o.dr > 0).map(o => o.dr)),
+    driver: mean(rated.map(([o]) => o.dr), rated.map(([, w]) => w)),
     foulPts: mean(use.map(o => o.mn * 5 + o.mj * 20)),
     broke: mean(use.map(o => (o.ns >= 0.5 || /[DB]/.test(o.br)) ? 1 : 0)),
     tipped: mean(use.map(o => (/T/.test(o.br) ? 1 : 0))),
@@ -85,9 +108,29 @@ export function teamStats(team, obsAll, pit, s) {
     est: mean(pts.map(p => p.total)),
     estAuto: mean(pts.map(p => p.auto)),
     estSd: sd(pts.map(p => p.total)),
+    estTele: mean(use.map(o => o.tM * (20 / Math.max(1, s.perTip)))),
+    estEnd: mean(use.map(o => (o.fN + o.fP) * 2 + o.gd + o.pk * 5)),
     tiles: {},
     autoSrc: new Set(),
   };
+  // Per-meet breakdown and last-meet trend
+  if (obs.length) {
+    const order = opts.order || [...new Set(obs.map(o => o.ev))];
+    st.byEvent = order.filter(ev => obs.some(o => o.ev === ev)).map(ev => {
+      const list = obs.filter(o => o.ev === ev);
+      const p = list.map(o => obsPoints(o, s).total);
+      const avg = a => a.reduce((x, y) => x + y, 0) / a.length;
+      return { ev, n: list.length, est: avg(p), made: avg(list.map(o => o.aM + o.tM)), flower: avg(list.map(o => o.fN + o.fP)), park: avg(list.map(o => o.pk)) };
+    });
+    if (st.byEvent.length) {
+      const last = st.byEvent[st.byEvent.length - 1];
+      st.lastEv = last.ev;
+      st.lastEst = last.est;
+      const prev = obs.filter(o => o.ev !== last.ev).map(o => obsPoints(o, s).total);
+      st.trend = prev.length ? last.est - prev.reduce((x, y) => x + y, 0) / prev.length : null;
+    }
+    st.meets = st.byEvent.length;
+  }
   st.flower = st.flowerN + st.flowerP;
   const shots = st.made + st.missed;
   st.acc = shots > 0 ? st.made / shots : null;

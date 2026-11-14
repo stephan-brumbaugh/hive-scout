@@ -42,6 +42,7 @@ export function resetCloudProgress() {
   state.cloudSent = {};
   state.cloudSentEv = {};
   state.settings.cloudCursor = 0;
+  state.settings.cloudLeagueUpd = 0;
   persist('cloudSent', 'cloudSentEv', 'settings');
 }
 
@@ -51,10 +52,16 @@ function notify(changed) {
   }
 }
 
-async function post(body) {
+// Call the Google Sheet script directly (used for official FIRST data as well as sync).
+export async function callScript(body, timeoutMs = 45000) {
+  if (!cloudConfigured()) throw new Error('Set up the Google Sheet cloud backup first (Sync tab).');
+  return post({ key: cfg().key, ...body }, timeoutMs);
+}
+
+async function post(body, timeoutMs = 45000) {
   const c = cfg();
   const ctl = new AbortController();
-  const t = setTimeout(() => ctl.abort(), 45000);
+  const t = setTimeout(() => ctl.abort(), timeoutMs);
   let res;
   try {
     // No custom headers: a "simple" request, which Google Apps Script web apps accept from any website.
@@ -72,7 +79,12 @@ async function post(body) {
     }
     throw new Error('Unexpected reply from the Google Sheet script (HTTP ' + res.status + ').');
   }
-  if (!j.ok) throw new Error(j.error || 'Sync failed');
+  if (!j.ok) {
+    const err = new Error(j.message || j.error || 'Sync failed');
+    err.code = j.error;
+    err.reply = j;
+    throw err;
+  }
   return j;
 }
 
@@ -97,7 +109,10 @@ export async function syncNow(reason = '') {
         records: recs,
         deletes: delIds.map(id => ({ id, ts: state.cloudDel[id] })),
         events: evs,
+        leagueUpd: (state.league && state.league.upd) || 0,
       };
+      const leagueToSend = state.league && (state.league.upd || 0) > (Number(state.settings.cloudLeagueUpd) || 0) ? state.league : null;
+      if (leagueToSend) body.league = leagueToSend;
       const j = await post(body);
 
       // What we sent is now in the Sheet
@@ -130,6 +145,13 @@ export async function syncNow(reason = '') {
         }
         state.cloudSentEv[e.code] = state.events[e.code].upd;
       }
+      if (j.league && j.league.upd && (!state.league || j.league.upd > (state.league.upd || 0))) {
+        state.league = j.league;
+        changed++;
+        persist('league');
+      }
+      if (leagueToSend) state.settings.cloudLeagueUpd = Math.max(Number(state.settings.cloudLeagueUpd) || 0, leagueToSend.upd);
+      if (j.league && j.league.upd) state.settings.cloudLeagueUpd = Math.max(Number(state.settings.cloudLeagueUpd) || 0, j.league.upd);
       state.settings.cloudCursor = Number(j.cursor) || 0;
       persist('records', 'events', 'settings', 'cloudSent', 'cloudSentEv', 'cloudDel', 'sent');
 

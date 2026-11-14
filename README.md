@@ -6,7 +6,7 @@ Hive Scout is a scouting app for the 2026–27 FTC season (BIOBUZZ). It runs in 
 - Each scout iPad sends its data to a "hub" iPad or laptop by showing QR codes on screen.
 - The hub ranks every team by how well they would pair with **your** robot.
 
-There is no app store and no login for scouts. Data is saved on each iPad first. Add the optional Google Sheet backup (section 6) and every iPad also syncs with the Sheet on its own whenever it's online.
+There is no app store and no login for scouts. Data is saved on each iPad first. Add the optional Google Sheet backup (section 7) and every iPad also syncs with the Sheet on its own whenever it's online.
 
 ---
 
@@ -78,12 +78,13 @@ The schedule is usually published shortly before qualification matches start. If
 Scanning the same code twice does no harm. Records are matched by ID and only newer copies replace older ones.
 
 **Pick list (hub):**
-- The **Teams** tab shows sortable stats for every team. Tap a team for details, match history and notes.
+- The **Meet** tab shows sortable stats for every team at this event. Tap a team for details, match history and notes.
+- The **League** tab follows every league team across the whole season (see section 6).
 - Mark teams **★ Want / ? Maybe / ✕ Avoid**.
 - The **Partners** tab ranks teams by how well they fit your robot.
 - To give the drive coach a copy: **Sync → Send all event data** on the hub, then scan it with the coach's iPad.
 
-**Scout your own matches too.** The Partners tab compares other teams against *your* robot's real numbers. It uses your team's records from every event, or your own pit entry if you have no match data yet.
+**Scout your own matches too.** The Partners tab compares other teams against *your* robot's real numbers. It uses each team's whole season of scouting, with the latest meet counting most, or a pit entry if there is no match data yet. Alliance selection only happens at the League Tournament, so Partners matters most there.
 
 ## 5. How the partner score works
 
@@ -100,7 +101,40 @@ You can change all thresholds and the tip model on **Event → Game & scoring se
 
 **Field symmetry:** starting tiles are recorded as seen from the audience. A6 is the top-left tile on screen, and row 1 is nearest the audience. To compare a red start with a blue start, the app flips the blue half onto the red half. Check Figure 9-2 in the manual, then choose *Mirror* or *Rotated 180°* to match the real field.
 
-## 6. Automatic cloud backup to a Google Sheet (optional)
+## 6. League mode and the season view
+
+**Set your league once** (Event tab → **Our league**):
+- **Get roster from FIRST** finds your league from your team number and downloads its member list. This needs the Google Sheet backup (section 7) and a FIRST API key in the script (below).
+- Until then, tap **Add all [event] teams** at a league meet, or **Type the list**.
+
+The roster is shared with every iPad through the Google Sheet, and through **Share event by QR**.
+
+**Which teams show at an event.** Every event has a **Teams shown** switch on the Event tab:
+- **League meets and the league tournament** show only your league. Other leagues' teams disappear from the Scout, Meet, pit and Partners screens. If a scout's assigned robot is from another league, the Scout tab says so, with a **Next match** button.
+- **State and other championships** show everyone.
+- The app picks automatically from the event type FTCScout or FIRST reports. Tap the other button to change it for that event.
+
+**League tab.** Every league team, all season, with every scout's data combined:
+- **Season est** and **Last meet**, with ▲▼ showing whether the last meet was better or worse than earlier ones.
+- HIVE launches, FLOWER pieces, park rate, fouls and breakdowns.
+- Three official-data toggles:
+  - **FTCScout OPR** (and **Scouts − OPR**: green means your scouts saw more than the official estimate, red means less).
+  - **League rankings**: rank, ranking score, W-L-T.
+  - **Meet results**: rank and record at each meet.
+
+Tap a team for a meet-by-meet table and a scouted-vs-official comparison.
+
+**Official data sources:**
+- **FTCScout OPR** downloads straight to each iPad.
+- **FIRST's league rankings and meet results** come through your Google Sheet script, which holds the FIRST API key so it never sits on the iPads. Until the key is added, meet results come from FTCScout.
+- Data refreshes by itself when it's over 3 hours old and the iPad is online, or tap **Update official data**. The last download stays available offline.
+
+**Adding the FIRST API key** (once, after FIRST emails it to you):
+1. Register free at ftc-events.firstinspires.org/services/API.
+2. When the email arrives, open the Sheet → **Extensions → Apps Script** → **Project Settings** (gear icon) → **Script properties** → **Add script property**.
+3. Add `FIRST_USER` = your API username, and `FIRST_KEY` = your authorization key. Click **Save**. No redeploy is needed.
+
+## 7. Automatic cloud backup to a Google Sheet (optional)
 
 Whenever an iPad is online, it uploads its new records to a Google Sheet and downloads every other iPad's records. It does this by itself, with no taps. With no internet the app keeps working, and the iPad catches up the next time it's online. QR codes are then only needed when nobody has internet.
 
@@ -120,13 +154,18 @@ The Sheet gets two readable tabs, **Matches** and **Pits**, that you can sort, f
 
 **Header badge:** `☁ Synced`, `☁ 3 waiting` (saved on the iPad, will upload when online) or `☁ Problem`. Tap the badge to see details on the Sync tab.
 
-## 7. Backups and exports
+**Updating the script** (when a new Hive Scout version needs it, like 1.2):
+1. Paste the new script over the old one, keeping your `TEAM_KEY`, and click **Save**.
+2. Run **setup** once and approve any new permission. Version 1.2 asks to "connect to an external service", which it needs to reach FIRST.
+3. Go to **Deploy → Manage deployments**, click the pencil icon, set **Version: New version**, and click **Deploy**. The web app URL stays the same, so the iPads need no changes.
+
+## 8. Backups and exports
 
 - Make a backup at the end of every event day: **Sync → Save backup**, then save to Files or AirDrop to a laptop. iPadOS can delete website data that hasn't been used for a while.
 - To restore a backup, or merge in data from another device, use **Sync → Import**. Merging never deletes anything.
 - **Match data CSV / Pit data CSV** open in Excel or Google Sheets.
 
-## 8. Updating the app
+## 9. Updating the app
 
 1. Edit or replace the files in your GitHub repository.
 2. Change the `VERSION` line at the top of `sw.js` (for example `hive-scout-v1.1.2`), and `APP_VERSION` at the top of `js/app.js` to match. This tells the iPads that a new version exists. The Event tab shows which version an iPad is running.
@@ -146,10 +185,11 @@ js/api.js              FTCScout, FIRST API, manual and file import
 js/qr.js               QR splitting, drawing and camera scanning
 js/analysis.js         team stats and partner compatibility
 js/cloud.js            automatic two-way sync with the Google Sheet
+js/official.js         FTCScout OPR and FIRST league rankings / meet results
 sw.js                  offline cache
 lib/                   qrcode-generator (MIT) and jsQR (Apache-2.0)
 tools/ftc_event_download.py   FIRST API → event file (laptop)
-tools/hive-scout-sync.gs      Google Apps Script for the cloud backup Sheet
+tools/hive-scout-sync.gs      Google Apps Script: cloud backup Sheet + FIRST data for the League tab
 ```
 
 Hive Scout is an unofficial tool. It is not affiliated with FIRST®, FTCScout or RTX. BIOBUZZ and FIRST Tech Challenge are trademarks of FIRST.

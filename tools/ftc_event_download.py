@@ -46,6 +46,7 @@ def main():
 
     events = get(f"/{season}/events?eventCode={code}", auth).get("events") or []
     name = events[0]["name"] if events else code
+    etype = (events[0].get("typeName") or events[0].get("type") or "") if events else ""
 
     teams, page, pages = {}, 1, 1
     while page <= pages:
@@ -68,7 +69,7 @@ def main():
                 teams[str(t["teamNumber"])] = t.get("teamName") or ""
 
     out = {
-        "hsEvent": 1, "code": code, "season": int(season), "name": name,
+        "hsEvent": 1, "code": code, "season": int(season), "name": name, "type": str(etype),
         "teams": teams, "matches": sorted(matches, key=lambda m: m["n"]), "src": "FIRST API",
     }
     fn = f"event-{code}.json"

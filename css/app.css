@@ -65,7 +65,7 @@ main { max-width: 1100px; margin: 0 auto; padding: 1rem max(1rem, env(safe-area-
 
 /* bottom tabs */
 .tabbar {
-  position: fixed; left: 0; right: 0; bottom: 0; z-index: 20; display: grid; grid-template-columns: repeat(5, 1fr);
+  position: fixed; left: 0; right: 0; bottom: 0; z-index: 20; display: grid; grid-template-columns: repeat(6, 1fr);
   background: var(--bar); padding-bottom: env(safe-area-inset-bottom);
 }
 .tabbar button {
@@ -286,3 +286,22 @@ button.listitem { justify-content: flex-start; }
 }
 .toast.ok { background: var(--ok); color: #fff; }
 .toast.err { background: var(--err); color: #fff; }
+
+/* league mode */
+.slot.other { opacity: .45; border-style: dashed; }
+.slot.other.mine { opacity: .75; }
+.banner.skip { display: flex; align-items: center; justify-content: space-between; gap: .8rem; flex-wrap: wrap; margin: .6rem 0 0; }
+.scope { margin: .6rem 0 .2rem; display: flex; flex-direction: column; gap: .35rem; }
+.gap.up { color: var(--ok); font-weight: 700; }
+.gap.down { color: var(--err); font-weight: 700; }
+.gap.even { color: var(--muted); }
+.trend { font-size: .8em; margin-left: .15rem; }
+.trend.up { color: var(--ok); } .trend.down { color: var(--err); } .trend.flat { color: var(--muted); }
+.mres { white-space: normal; min-width: 180px; }
+.mr { display: inline-block; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 0 .35rem; margin: 1px 2px; font-size: .82rem; white-space: nowrap; }
+.mr small { color: var(--muted); }
+.official-bar { margin: .2rem 0 .4rem; }
+.official-bar .flags { align-items: center; }
+.tbl.league td, .tbl.league th { padding-left: .45rem; padding-right: .45rem; }
+.tbl.cmp td:first-child { white-space: normal; }
+@media (max-width: 700px) { .tabbar button { font-size: .7rem; } }

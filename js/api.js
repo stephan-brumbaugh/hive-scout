@@ -79,6 +79,7 @@ function buildMatches(list, getNum, getLevel, getTeams, getTeamNum, getAlliance,
 
 // ---------- FTCScout ----------
 
+const Q_EVENT_TYPE = `query E($s:Int!,$c:String!){eventByCode(season:$s,code:$c){code name start type teams{teamNumber team{name}} matches{matchNum tournamentLevel teams{teamNumber alliance station}}}}`;
 const Q_EVENT_FULL = `query E($s:Int!,$c:String!){eventByCode(season:$s,code:$c){code name start teams{teamNumber team{name}} matches{matchNum tournamentLevel teams{teamNumber alliance station}}}}`;
 const Q_EVENT_MIN = `query E($s:Int!,$c:String!){eventByCode(season:$s,code:$c){code name teams{teamNumber} matches{matchNum tournamentLevel teams{teamNumber alliance}}}}`;
 
@@ -93,7 +94,7 @@ export async function ftcscoutEvent(season, code) {
   offlineCheck();
   code = code.trim().toUpperCase();
   let ev = null, lastErr = null;
-  for (const q of [Q_EVENT_FULL, Q_EVENT_MIN]) {
+  for (const q of [Q_EVENT_TYPE, Q_EVENT_FULL, Q_EVENT_MIN]) {
     try {
       const d = await gql(q, { s: Number(season), c: code });
       if (!d || !d.eventByCode) throw new Error(`Event ${code} was not found on FTCScout for the ${season} season.`);
@@ -104,9 +105,10 @@ export async function ftcscoutEvent(season, code) {
       if (/not found/i.test(e.message)) throw e;
     }
   }
-  let teams = {}, matches = [], name = code;
+  let teams = {}, matches = [], name = code, type = '';
   if (ev) {
     name = ev.name || code;
+    type = ev.type ? String(ev.type) : '';
     for (const t of ev.teams || []) teams[t.teamNumber] = (t.team && t.team.name) || '';
     matches = buildMatches(ev.matches, m => m.matchNum, m => m.tournamentLevel, m => m.teams,
       t => t.teamNumber, t => t.alliance, t => t.station);
@@ -116,6 +118,7 @@ export async function ftcscoutEvent(season, code) {
     const tlist = await rest(`/events/${season}/${code}/teams`).catch(e => { lastErr = e; return null; });
     if (!tlist) throw lastErr || new Error(`Event ${code} was not found on FTCScout.`);
     name = (info && info.name) || code;
+    type = (info && info.type) ? String(info.type) : '';
     for (const t of tlist) teams[t.teamNumber] = (t.team && t.team.name) || '';
     const mlist = await rest(`/events/${season}/${code}/matches`).catch(() => []);
     matches = buildMatches(mlist, m => m.matchNum, m => m.tournamentLevel, m => m.teams,
@@ -124,7 +127,7 @@ export async function ftcscoutEvent(season, code) {
   await fillNames(teams);
   // Teams that appear in the schedule but not the team list
   for (const m of matches) for (const t of [...m.r, ...m.b]) if (!(t in teams)) teams[t] = '';
-  return { code, season: Number(season), name, teams, matches, src: 'FTCScout', upd: Date.now() };
+  return { code, season: Number(season), name, type, teams, matches, src: 'FTCScout', upd: Date.now() };
 }
 
 export async function ftcscoutTeamEvents(season, team) {
@@ -180,7 +183,9 @@ export async function firstApiEvent(settings, code) {
     return res.json();
   };
   const evs = await get(`/${season}/events?eventCode=${code}`).catch(() => null);
-  const name = (evs && evs.events && evs.events[0] && evs.events[0].name) || code;
+  const evInfo = (evs && evs.events && evs.events[0]) || {};
+  const name = evInfo.name || code;
+  const type = String(evInfo.typeName || evInfo.type || '');
   const teams = {};
   let page = 1, pages = 1;
   do {
@@ -193,7 +198,7 @@ export async function firstApiEvent(settings, code) {
   const matches = buildMatches(sched.schedule, m => m.matchNumber, null, m => m.teams,
     t => t.teamNumber, t => t.station, t => t.station);
   for (const m of matches) for (const t of [...m.r, ...m.b]) if (!(t in teams)) teams[t] = '';
-  return { code, season: Number(season), name, teams, matches, src: 'FIRST API', upd: Date.now() };
+  return { code, season: Number(season), name, type, teams, matches, src: 'FIRST API', upd: Date.now() };
 }
 
 // ---------- Manual entry & files ----------
@@ -244,5 +249,48 @@ export function normalizeEvent(obj) {
   const teams = {};
   for (const [k, v] of Object.entries(obj.teams || {})) if (Number(k)) teams[Number(k)] = String(v || '');
   const matches = (obj.matches || []).map(m => ({ n: Number(m.n), r: (m.r || []).map(Number), b: (m.b || []).map(Number) })).filter(m => m.n);
-  return { code: String(obj.code).toUpperCase(), season: Number(obj.season) || 2026, name: obj.name || obj.code, teams, matches, src: obj.src || 'File', upd: obj.upd || Date.now() };
+  const out = { code: String(obj.code).toUpperCase(), season: Number(obj.season) || 2026, name: obj.name || obj.code, type: String(obj.type || ''), teams, matches, src: obj.src || 'File', upd: obj.upd || Date.now() };
+  if (obj.scope === 'league' || obj.scope === 'all') out.scope = obj.scope;
+  return out;
+}
+
+// ---------- FTCScout per-team official numbers ----------
+
+const num = v => (v === null || v === undefined || v === '' || isNaN(Number(v)) ? null : Number(v));
+const pick = (o, k) => (o && typeof o[k] === 'object' && o[k] !== null ? num(o[k].value) : num(o && o[k]));
+
+// Season OPR (points a team adds per match, estimated from official scores) split into AUTO / TELEOP / endgame.
+export async function ftcscoutQuickStats(season, teams, onProgress) {
+  offlineCheck();
+  let done = 0;
+  const res = await pool(teams, 6, async t => {
+    const q = await rest(`/teams/${t}/quick-stats?season=${season}`);
+    if (onProgress) onProgress(++done, teams.length);
+    if (!q) return null;
+    const tot = pick(q, 'tot');
+    if (tot === null) return null;
+    return { tot, auto: pick(q, 'auto'), dc: pick(q, 'dc'), eg: pick(q, 'eg'), rank: q.tot && num(q.tot.rank), count: num(q.count) };
+  });
+  const out = {};
+  teams.forEach((t, i) => { if (res[i]) out[t] = res[i]; });
+  return out;
+}
+
+// Rank and record at each event a team played (FTCScout); used when FIRST data isn't set up.
+export async function ftcscoutTeamResults(season, teams) {
+  offlineCheck();
+  const res = await pool(teams, 6, t => rest(`/teams/${t}/events/${season}`));
+  const meets = {};
+  teams.forEach((t, i) => {
+    for (const p of res[i] || []) {
+      const code = p.eventCode || (p.event && p.event.code);
+      if (!code) continue;
+      const st = p.stats || {};
+      const rank = num(st.rank ?? p.rank);
+      if (rank === null && st.wins === undefined) continue;
+      const m = meets[code] || (meets[code] = { code, name: (p.event && p.event.name) || code, date: (p.event && p.event.start) || '', rankings: [] });
+      m.rankings.push({ team: Number(t), rank: rank || 0, rs: num(st.rp ?? st.rankingScore), w: num(st.wins) || 0, l: num(st.losses) || 0, t: num(st.ties) || 0, played: num(st.qualMatchesPlayed ?? st.matchesPlayed) || 0, avg: null });
+    }
+  });
+  return Object.values(meets).sort((a, b) => String(a.date).localeCompare(String(b.date)));
 }
