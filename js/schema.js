@@ -34,6 +34,17 @@ export const MATCH_FIELDS = [
   ['mj', 'i', 'Major fouls'],
   ['cd', 'i', 'Card (0 none,1 yellow,2 red)'],
   ['nt', 's', 'Notes'],
+  ['ps', 's', 'Position'],           // R1 R2 B1 B2 — the robot position this scout covered
+];
+
+// A scout taking over an iPad / position ("sign-in"), so missed matches can be traced to a person.
+export const SHIFT_FIELDS = [
+  ['id', 's', 'Record ID'],
+  ['ev', 's', 'Event'],
+  ['ps', 's', 'Position'],
+  ['sc', 's', 'Scout'],
+  ['mt', 'i', 'From match'],
+  ['ts', 'i', 'Signed in (unix)'],
 ];
 
 export const PIT_FIELDS = [
@@ -84,7 +95,7 @@ export function blankPit() {
   return r;
 }
 
-function fieldsFor(type) { return type === 'p' ? PIT_FIELDS : MATCH_FIELDS; }
+function fieldsFor(type) { return type === 'p' ? PIT_FIELDS : type === 's' ? SHIFT_FIELDS : MATCH_FIELDS; }
 
 // Compact array form, trailing empty values trimmed.
 export function toArr(rec) {
@@ -103,8 +114,13 @@ export function fromArr(arr, type) {
 }
 
 export function validRecord(r) {
-  return r && (r.t === 'm' || r.t === 'p') && typeof r.id === 'string' && r.id.length > 2 && r.tm > 0;
+  if (!r || typeof r.id !== 'string' || r.id.length < 3) return false;
+  if (r.t === 's') return !!(r.ev && (r.sc || r.ps));
+  return (r.t === 'm' || r.t === 'p') && r.tm > 0;
 }
+
+export const POSITIONS = [['R1', 'Red 1'], ['R2', 'Red 2'], ['B1', 'Blue 1'], ['B2', 'Blue 2']];
+export const posLabel = p => (POSITIONS.find(x => x[0] === p) || [, ''])[1];
 
 function csvCell(v) {
   const s = String(v ?? '');

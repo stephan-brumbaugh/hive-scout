@@ -22,7 +22,9 @@ export function cloudActive() {
 }
 
 function pendingRecords() {
-  return Object.values(state.records).filter(r => state.cloudSent[r.id] !== r.ts);
+  // Scout sign-in records need Sheet script version 4+; older scripts would drop them.
+  const shiftsOK = (Number(state.settings.cloudVersion) || 0) >= 4;
+  return Object.values(state.records).filter(r => state.cloudSent[r.id] !== r.ts && (r.t !== 's' || shiftsOK));
 }
 
 function pendingEvents() {
@@ -153,6 +155,7 @@ export async function syncNow(reason = '') {
       if (leagueToSend) state.settings.cloudLeagueUpd = Math.max(Number(state.settings.cloudLeagueUpd) || 0, leagueToSend.upd);
       if (j.league && j.league.upd) state.settings.cloudLeagueUpd = Math.max(Number(state.settings.cloudLeagueUpd) || 0, j.league.upd);
       state.settings.cloudCursor = Number(j.cursor) || 0;
+      state.settings.cloudVersion = Number(j.version) || 0;
       persist('records', 'events', 'settings', 'cloudSent', 'cloudSentEv', 'cloudDel', 'sent');
 
       if (!j.more && !pendingRecords().length && !Object.keys(state.cloudDel).length) break;

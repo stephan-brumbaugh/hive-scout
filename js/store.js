@@ -38,6 +38,8 @@ export const DEFAULT_SETTINGS = {
   cloudCursor: 0,             // last change number pulled from the Sheet
   cloudLeagueUpd: 0,          // league roster version the Sheet already has
   show: { opr: true, rank: true, meets: true }, // official-data columns shown on the League tab
+  watch: [],                  // team numbers whose matches the Schedule tab lists
+  watchOurs: true,            // also list our own matches
 };
 
 let storageOK = true;
@@ -162,7 +164,7 @@ export function isMine(r) { return r.id.startsWith(state.settings.deviceId); }
 export function unsentRecords() {
   const s = state.settings;
   const cloudOn = s.cloudOn !== false && s.cloudUrl && s.cloudKey;
-  return Object.values(state.records).filter(r => isMine(r) && !state.sent[r.id] && !(cloudOn && state.cloudSent[r.id] === r.ts));
+  return Object.values(state.records).filter(r => r.t !== 's' && isMine(r) && !state.sent[r.id] && !(cloudOn && state.cloudSent[r.id] === r.ts));
 }
 
 export function markSent(ids) {

@@ -25,20 +25,22 @@
 const TEAM_KEY = 'PUT-YOUR-TEAM-KEY-HERE';
 
 const MAX_PULL = 600; // records returned per request
-const API_VERSION = 2;
+const API_VERSION = 4;
 const FIRST_BASE = 'https://ftc-api.firstinspires.org/v2.0';
 
 const REC_HEAD = ['id', 'seq', 'ts', 'type', 'event', 'team', 'match', 'device', 'deleted', 'json'];
 const EV_HEAD = ['code', 'seq', 'upd', 'name', 'json'];
 
 const MATCH_COLS = [
-  ['ev', 'Event'], ['mt', 'Match'], ['tm', 'Team'], ['al', 'Alliance'], ['sc', 'Scout'], ['ts', 'Saved'],
+  ['ev', 'Event'], ['mt', 'Match'], ['tm', 'Team'], ['al', 'Alliance'], ['ps', 'Position'], ['sc', 'Scout'], ['ts', 'Saved'],
   ['ns', 'No show'], ['st', 'Start tile'], ['lv', 'AUTO leave'], ['aM', 'AUTO HIVE made'], ['aX', 'AUTO HIVE missed'],
   ['aP', 'AUTO park'], ['aS', 'AUTO sources'], ['tM', 'TELEOP HIVE made'], ['tX', 'TELEOP HIVE missed'],
   ['iS', 'Intake sources'], ['fN', 'NECTAR into FLOWER'], ['fP', 'POLLEN into FLOWER'], ['gd', 'Into GARDEN'],
   ['pk', 'Park'], ['df', 'Defense (0-2)'], ['dr', 'Driver (1-7)'], ['br', 'Issues'], ['mn', 'Minor fouls'],
   ['mj', 'Major fouls'], ['cd', 'Card (0/1/2)'], ['nt', 'Notes'], ['id', 'Record ID'],
 ];
+const SHIFT_COLS = [['ev', 'Event'], ['ps', 'Position'], ['sc', 'Scout'], ['mt', 'From match'], ['ts', 'Signed in'], ['id', 'Record ID']];
+const POS_LABELS = { R1: 'Red 1', R2: 'Red 2', B1: 'Blue 1', B2: 'Blue 2' };
 const PIT_COLS = [
   ['ev', 'Event'], ['tm', 'Team'], ['sc', 'Scout'], ['ts', 'Saved'], ['dt', 'Drivetrain'], ['ln', 'Launcher'],
   ['hv', 'Launches into HIVE'], ['fl', 'Places in FLOWER'], ['fb', 'Pulls POLLEN from FLOWER'], ['nc', 'Handles NECTAR'],
@@ -53,6 +55,7 @@ function setup() {
   const ss = SpreadsheetApp.getActiveSpreadsheet();
   ensureSheet_(ss, 'Matches', MATCH_COLS.map(c => c[1]));
   ensureSheet_(ss, 'Pits', PIT_COLS.map(c => c[1]));
+  ensureSheet_(ss, 'Scout log', SHIFT_COLS.map(c => c[1]));
   ensureSheet_(ss, '_records', REC_HEAD);
   ensureSheet_(ss, '_events', EV_HEAD);
   const first = ss.getSheetByName('Sheet1');
@@ -77,9 +80,9 @@ function doPost(e) {
   }
   if (TEAM_KEY === 'PUT-YOUR-TEAM-KEY-HERE') return json_({ ok: false, error: 'Set TEAM_KEY in the Apps Script first.' });
   if (!req || req.key !== TEAM_KEY) return json_({ ok: false, error: 'Wrong team key' });
-  if (req.action === 'league') {
+  if (req.action === 'league' || req.action === 'matches') {
     try {
-      return json_(leagueData_(req));
+      return json_(req.action === 'league' ? leagueData_(req) : matchesData_(req));
     } catch (err) {
       return json_({ ok: false, error: String((err && err.message) || err) });
     }
@@ -134,7 +137,7 @@ function sync_(req) {
   const device = String(req.device || '').slice(0, 20);
 
   (req.records || []).forEach(r => {
-    if (!r || typeof r.id !== 'string' || !r.id || (r.t !== 'm' && r.t !== 'p')) return;
+    if (!r || typeof r.id !== 'string' || !r.id || (r.t !== 'm' && r.t !== 'p' && r.t !== 's')) return;
     const ts = Number(r.ts) || 0;
     const i = index[r.id];
     if (i !== undefined) {
@@ -208,32 +211,39 @@ function sync_(req) {
 }
 
 function recRow_(r, seq, device) {
-  return [r.id, seq, Number(r.ts) || 0, r.t, String(r.ev || ''), Number(r.tm) || '', r.t === 'm' ? (Number(r.mt) || '') : '',
+  return [r.id, seq, Number(r.ts) || 0, r.t, String(r.ev || ''), Number(r.tm) || '', r.t !== 'p' ? (Number(r.mt) || '') : '',
     device, false, JSON.stringify(r)];
 }
 
 function rebuildReadable_(ss, rows) {
-  const matches = [], pits = [];
+  const matches = [], pits = [], shifts = [];
   rows.forEach(row => {
     if (isTrue_(row[8]) || !row[9]) return;
     let r;
     try { r = JSON.parse(row[9]); } catch (err) { return; }
-    if (r.t === 'm') matches.push(r); else if (r.t === 'p') pits.push(r);
+    if (r.t === 'm') matches.push(r); else if (r.t === 'p') pits.push(r); else if (r.t === 's') shifts.push(r);
   });
+  shifts.sort((a, b) => String(a.ev).localeCompare(String(b.ev)) || a.ts - b.ts);
   matches.sort((a, b) => String(a.ev).localeCompare(String(b.ev)) || a.mt - b.mt || a.tm - b.tm);
   pits.sort((a, b) => String(a.ev).localeCompare(String(b.ev)) || a.tm - b.tm);
   writeReadable_(ensureSheet_(ss, 'Matches', MATCH_COLS.map(c => c[1])), MATCH_COLS, matches);
   writeReadable_(ensureSheet_(ss, 'Pits', PIT_COLS.map(c => c[1])), PIT_COLS, pits);
+  writeReadable_(ensureSheet_(ss, 'Scout log', SHIFT_COLS.map(c => c[1])), SHIFT_COLS, shifts);
 }
 
 function writeReadable_(sheet, cols, recs) {
   const values = recs.map(r => cols.map(([k]) => {
     if (k === 'ts') return r.ts ? new Date(r.ts * 1000) : '';
+    if (k === 'ps') return POS_LABELS[r.ps] || r.ps || '';
     const v = r[k];
     if (v === undefined || v === null) return '';
     // keep text as text (stop Sheets turning "=..." into formulas or "1/2" into dates)
     return typeof v === 'string' && /^[=+\-@0-9]/.test(v) ? "'" + v : v;
   }));
+  // Tabs made by older versions may have fewer columns or old titles: grow them and rewrite the header row.
+  const have = sheet.getMaxColumns();
+  if (cols.length > have) sheet.insertColumnsAfter(have, cols.length - have);
+  sheet.getRange(1, 1, 1, cols.length).setValues([cols.map(c => c[1])]);
   const last = sheet.getLastRow();
   if (last > 1) sheet.getRange(2, 1, last - 1, cols.length).clearContent();
   if (values.length) {
@@ -356,6 +366,43 @@ function leagueEvents_(season, region, code, team) {
   const list = Object.keys(byCode).map(k => byCode[k]).sort((a, b) => String(a.dateStart).localeCompare(String(b.dateStart)));
   try { cache.put(ck, JSON.stringify(list), 21600); } catch (err) { /* ignore */ }
   return list;
+}
+
+// Qualification schedule (times) and results for one event, refreshed at most once a minute.
+function matchesData_(req) {
+  const creds = firstCreds_();
+  if (!creds.user || !creds.key) {
+    return { ok: false, error: 'nokey', message: 'Add FIRST_USER and FIRST_KEY in Apps Script > Project Settings > Script properties.' };
+  }
+  const season = Number(req.season) || 2026;
+  const code = String(req.event || '').trim().toUpperCase();
+  if (!code) return { ok: false, error: 'No event code.' };
+  const sch = firstGet_('/' + season + '/schedule/' + encodeURIComponent(code) + '?tournamentLevel=qual', 60);
+  const res = firstGet_('/' + season + '/matches/' + encodeURIComponent(code) + '?tournamentLevel=qual', 60);
+  const byN = {};
+  ((sch && sch.schedule) || []).forEach(m => {
+    const n = Number(m.matchNumber);
+    if (n) byN[n] = { n: n, time: m.startTime || null, red: sideTeams_(m.teams, 'red'), blue: sideTeams_(m.teams, 'blue') };
+  });
+  ((res && res.matches) || []).forEach(m => {
+    const n = Number(m.matchNumber);
+    if (!n) return;
+    const x = byN[n] || (byN[n] = { n: n, time: null, red: sideTeams_(m.teams, 'red'), blue: sideTeams_(m.teams, 'blue') });
+    x.actual = m.actualStartTime || null;
+    if (m.scoreRedFinal !== null && m.scoreRedFinal !== undefined && m.scoreBlueFinal !== null && m.scoreBlueFinal !== undefined) {
+      x.rs = Number(m.scoreRedFinal);
+      x.bs = Number(m.scoreBlueFinal);
+    }
+  });
+  const matches = Object.keys(byN).map(k => byN[k]).sort((a, b) => a.n - b.n);
+  return { ok: true, kind: 'matches', event: code, fetched: Date.now(), matches: matches };
+}
+
+function sideTeams_(teams, color) {
+  return (teams || [])
+    .filter(t => String(t.station || '').toLowerCase().indexOf(color) === 0)
+    .sort((a, b) => String(a.station).localeCompare(String(b.station)))
+    .map(t => Number(t.teamNumber)).filter(Boolean);
 }
 
 function slimRank_(r) {

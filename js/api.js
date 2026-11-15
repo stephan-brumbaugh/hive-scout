@@ -294,3 +294,30 @@ export async function ftcscoutTeamResults(season, teams) {
   });
   return Object.values(meets).sort((a, b) => String(a.date).localeCompare(String(b.date)));
 }
+
+// Qualification match times and scores from FTCScout (used when FIRST isn't set up).
+export async function ftcscoutLive(season, code) {
+  offlineCheck();
+  const list = await rest(`/events/${season}/${code}/matches`);
+  if (!list) throw new Error('FTCScout has no matches for this event yet.');
+  const total = (sc, side) => {
+    if (!sc) return null;
+    const o = sc[side] ?? sc[side + 'Score'];
+    if (o === null || o === undefined) return null;
+    if (typeof o === 'number') return o;
+    return num(o.totalPoints ?? o.total ?? o.totalPointsNp);
+  };
+  const out = [];
+  for (const m of list) {
+    if (m.tournamentLevel && !isQual(m.tournamentLevel)) continue;
+    const n = Number(m.matchNum ?? m.matchNumber);
+    if (!n) continue;
+    const teams = (m.teams || []).slice().sort((a, b) => stationNum(a.station) - stationNum(b.station));
+    const red = teams.filter(t => isRed(t.alliance)).map(t => Number(t.teamNumber)).filter(Boolean);
+    const blue = teams.filter(t => t.alliance && !isRed(t.alliance)).map(t => Number(t.teamNumber)).filter(Boolean);
+    const played = m.hasBeenPlayed !== false;
+    const rs = played ? total(m.scores, 'red') : null, bs = played ? total(m.scores, 'blue') : null;
+    out.push({ n, time: m.scheduledStartTime || m.startTime || null, actual: m.actualStartTime || null, red, blue, rs, bs });
+  }
+  return out.sort((a, b) => a.n - b.n);
+}

@@ -44,9 +44,11 @@ The scouting data never goes to GitHub. GitHub only hosts the app's code. Everyt
 
 ## 3. Set up before the event
 
-On **every** iPad, open the **Event** tab and enter:
-- the scout's name
+On **every** iPad, open the **Event** tab and set:
+- **Position this iPad scouts**: Red 1, Red 2, Blue 1, Blue 2, or *Pit / any* for a pit or floating iPad
 - your team number
+
+The scout's name is asked for on the **Scout** tab the first time it opens.
 
 Then load the event in one of these ways:
 
@@ -62,10 +64,18 @@ The schedule is usually published shortly before qualification matches start. If
 ## 4. At the event
 
 **Match scouts:**
-1. Open **Scout**.
-2. Tap your assigned position (for example *Red 1*). The app remembers it, so each new match fills in the right team automatically.
+1. Open **Scout**. The bar at the top shows the iPad's position (for example **Red 2**) and the scout's name. When the iPad changes hands, tap **New scout** and enter the new name. That's the only time anyone types a name.
+2. The team for this iPad's position fills in automatically each match. Tapping a different position asks before it switches the iPad.
 3. Tap counters and toggles during the match.
-4. Tap **Save** at the end. The form moves on to the next match.
+4. Tap **Save** at the end. The form moves on to the next match. Each record is saved with the scout's name and the position.
+
+**Who missed what:** on **Meet → Scouting coverage**:
+- A grid shows every match by position, and who scouted each robot.
+- Missed robots are in red, with the scout who was signed in to that position at the time.
+- **Missed matches by scout** totals them per person.
+- Robots from other leagues at league events, and matches not played yet, don't count.
+
+Records from before version 1.4, when the position was typed in as the name, still show with a best-guess "?".
 
 **Pit scouts:** open **Scout → Pit scouting**, tap a team, and fill in the robot profile. The ✓ marks teams that are already done.
 
@@ -80,11 +90,24 @@ Scanning the same code twice does no harm. Records are matched by ID and only ne
 **Pick list (hub):**
 - The **Meet** tab shows sortable stats for every team at this event. Tap a team for details, match history and notes.
 - The **League** tab follows every league team across the whole season (see section 6).
+- The **Schedule** tab combines the match schedules of every team you watch (see below).
 - Mark teams **★ Want / ? Maybe / ✕ Avoid**.
 - The **Partners** tab ranks teams by how well they fit your robot.
 - To give the drive coach a copy: **Sync → Send all event data** on the hub, then scan it with the coach's iPad.
 
 **Scout your own matches too.** The Partners tab compares other teams against *your* robot's real numbers. It uses each team's whole season of scouting, with the latest meet counting most, or a pit entry if there is no match data yet. Alliance selection only happens at the League Tournament, so Partners matters most there.
+
+**Schedule tab (coaching more than one team):**
+- Add the teams you care about: type several numbers at once (`12345, 23456`) or tap **Pick from [event]**. Your own team is included unless you untick it.
+- One combined list shows every qualification match that includes any of them.
+- Each watched team keeps its own colour everywhere on the tab. For every match you see:
+  - the time
+  - both alliances
+  - each watched team's position (for example *Red 2*)
+  - the score
+  - **W/L/T** for each watched team
+- A card per team shows its record at this meet and its next match and time. The next match is highlighted, and **Hide finished matches** trims the list.
+- Times and results come from FIRST through the Google Sheet script when the API key is set up, and from FTCScout otherwise. They refresh every minute while the Schedule tab is open and online, or tap **Update times & results**. The last download stays available offline.
 
 ## 5. How the partner score works
 
@@ -148,7 +171,10 @@ Whenever an iPad is online, it uploads its new records to a Google Sheet and dow
 6. Open Hive Scout on that computer, using the same web address as the iPads. Go to **Sync → Cloud backup** and paste the URL and the team key. The status should change to **Synced**.
 7. On each iPad, go to **Sync → Start camera** and scan the computer's **Share cloud setup by QR**. **Share event by QR** also includes the cloud setup.
 
-The Sheet gets two readable tabs, **Matches** and **Pits**, that you can sort, filter or chart. They are rebuilt on every change, so don't type in them. The hidden tabs `_records` and `_events` hold the sync data; don't edit those either.
+The Sheet gets readable tabs you can sort, filter or chart. They are rebuilt on every change, so don't type in them:
+- **Matches**, which includes each record's **Position** and **Scout**
+- **Pits**
+- **Scout log**, listing who took over which position and from which match The hidden tabs `_records` and `_events` hold the sync data; don't edit those either.
 
 **If "Anyone" isn't offered** in step 5, your school Google account doesn't allow outside access. Copy the Sheet and script into a personal Google account and deploy it there instead. The iPads don't need to sign in to anything.
 
@@ -156,7 +182,7 @@ The Sheet gets two readable tabs, **Matches** and **Pits**, that you can sort, f
 
 **Updating the script** (when a new Hive Scout version needs it, like 1.2):
 1. Paste the new script over the old one, keeping your `TEAM_KEY`, and click **Save**.
-2. Run **setup** once and approve any new permission. Version 1.2 asks to "connect to an external service", which it needs to reach FIRST.
+2. Run **setup** once and approve any new permission. Version 1.2 and later ask to "connect to an external service", which the script needs to reach FIRST. Version 1.3 adds FIRST match times and results for the Schedule tab.
 3. Go to **Deploy → Manage deployments**, click the pencil icon, set **Version: New version**, and click **Deploy**. The web app URL stays the same, so the iPads need no changes.
 
 ## 8. Backups and exports

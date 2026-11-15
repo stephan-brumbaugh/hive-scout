@@ -1,5 +1,5 @@
 // Offline cache. Bump VERSION whenever you upload changed files so iPads pick up the update.
-const VERSION = 'hive-scout-v1.2.0';
+const VERSION = 'hive-scout-v1.4.0';
 const FILES = [
   './',
   './index.html',

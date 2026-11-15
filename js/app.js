@@ -1,15 +1,15 @@
 import { hasLeague, inLeague, eventScope, inScope, saveLeague } from './store.js';
-import { official, refreshOfficial, startOfficial, oprFor, rankFor, meetsFor } from './official.js';
+import { official, refreshOfficial, startOfficial, oprFor, rankFor, meetsFor, liveFor, refreshLive } from './official.js';
 import { state, persist, newId, upsertRecord, deleteRecord, isMine, unsentRecords, markSent, activeEvent,
   eventRecords, saveEvent, getPick, setPick, backupObject, mergeBackup, clearAll, storageWorks } from './store.js';
-import { blankMatch, blankPit, toArr, fromArr, toCSV, LABELS } from './schema.js';
+import { blankMatch, blankPit, toArr, fromArr, toCSV, LABELS, POSITIONS, posLabel } from './schema.js';
 import { ftcscoutEvent, ftcscoutTeamEvents, ftcscoutSearch, firstApiEvent, manualEvent, normalizeEvent,
   teamsToText, scheduleToText, parseTeams } from './api.js';
 import { encodeMessage, Assembler, drawQR, Scanner } from './qr.js';
 import { observations, teamStats, eventContext, compatibility, tileXY, eventOrder, recencyWeights } from './analysis.js';
 import { cloud, cloudConfigured, cloudActive, cloudPending, syncNow, syncSoon, startCloud, resetCloudProgress } from './cloud.js';
 
-export const APP_VERSION = '1.2.0'; // keep in step with VERSION in sw.js
+export const APP_VERSION = '1.4.0'; // keep in step with VERSION in sw.js
 const S = () => state.settings;
 const $ = (sel, root = document) => root.querySelector(sel);
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -265,7 +265,7 @@ function refreshCloudButtons() {
 function render() {
   clearTimeout(ui.renderTimer);
   if (ui.scanner && ui.scanner.running) stopScanner();
-  const fn = { event: viewEvent, scout: viewScout, sync: viewSync, teams: viewTeams, league: viewLeague, partners: viewPartners }[ui.tab];
+  const fn = { event: viewEvent, scout: viewScout, sync: viewSync, teams: viewTeams, schedule: viewSchedule, league: viewLeague, partners: viewPartners }[ui.tab];
   const y = window.scrollY;
   $('#view').innerHTML = fn();
   window.scrollTo(0, y);
@@ -276,6 +276,7 @@ function render() {
 function go(tab) {
   if (ui.tab === 'sync' && tab !== 'sync') stopScanner();
   ui.tab = tab;
+  if (tab === 'schedule') refreshLive(activeEvent());
   window.scrollTo(0, 0);
   render();
 }
@@ -291,8 +292,10 @@ function viewEvent() {
   ${!storageWorks() ? '<div class="banner err">This browser is blocking storage (Private Browsing?). Data will not be saved.</div>' : ''}
   <section class="card">
     <h2>This iPad</h2>
+    <span class="flabel">Position this iPad scouts</span>
+    ${positionPicker()}
     <div class="grid2">
-      <label>Scout name<input data-set="scoutName" value="${esc(s.scoutName)}" placeholder="First name" autocomplete="off"></label>
+      <label>Scout's name (who has this iPad now)<input data-set="scoutName" value="${esc(s.scoutName)}" placeholder="First and last name" autocomplete="off"></label>
       <label>Our team number<input data-set="ourTeam" data-type="int" value="${esc(s.ourTeam)}" inputmode="numeric" placeholder="e.g. 12345"></label>
     </div>
     <p class="muted small">Device ID <b>${esc(s.deviceId)}</b> · ${recCount} records stored on this iPad · App version <b>${APP_VERSION}</b></p>
@@ -362,6 +365,46 @@ function viewEvent() {
     </div>
     <p class="muted small">Field symmetry tells the app how a blue starting tile lines up with a red one when it compares AUTO paths. Check Figure 9-2 in the manual and pick the one that matches.</p>
   </section>`;
+}
+
+function positionPicker() {
+  const cur = S().slot || '';
+  return `<div class="seg pospick">${POSITIONS.map(([p, l]) =>
+    `<button data-act="setPosition" data-v="${p}" class="${p[0] === 'R' ? 'red' : 'blue'} ${cur === p ? 'on' : ''}">${l}</button>`).join('')}
+    <button data-act="setPosition" data-v="" class="${!cur ? 'on' : ''}">Pit / any</button></div>`;
+}
+
+function scoutBar() {
+  const p = S().slot;
+  return `<div class="scoutbar ${p ? (p[0] === 'R' ? 'isred' : 'isblue') : ''}">
+    <span class="pos">${p ? esc(posLabel(p)) : 'Any position'}</span>
+    <span class="who">Scout: <b>${esc(S().scoutName)}</b></span>
+    <button data-act="newScout">New scout</button>
+  </div>`;
+}
+
+// Station of a team in a scheduled match: 'R1'…'B2', or ''.
+function stationOf(mt, tm) {
+  const m = scheduleFor(mt);
+  if (!m) return '';
+  const r = m.r.indexOf(Number(tm)), b = m.b.indexOf(Number(tm));
+  return r >= 0 ? 'R' + (r + 1) : b >= 0 ? 'B' + (b + 1) : '';
+}
+
+// Record who is holding this iPad and which position, from which match on.
+function logShift() {
+  const ev = S().activeEvent;
+  if (!ev || !S().scoutName) return;
+  const mine = eventRecords(ev, 's').filter(isMine).sort((a, b) => a.ts - b.ts);
+  const last = mine[mine.length - 1];
+  const ps = S().slot || '';
+  const sc = S().scoutName.trim();
+  if (last && last.ps === ps && last.sc === sc) return;
+  const mt = ui.mf && ui.mf.ev === ev && !ui.mf.id ? Number(ui.mf.mt) || 1 : nextMatchNumber();
+  const rec = { t: 's', id: newId(), ev, ps, sc, mt, ts: now() };
+  state.records[rec.id] = rec;
+  persist('records');
+  syncSoon();
 }
 
 function scopeControl(ev) {
@@ -531,12 +574,16 @@ function viewScout() {
     return `<section class="card"><h2>No event yet</h2><p>Load or create an event on the Event tab first. A quick manual event with just a code is enough to start scouting.</p>
       <button class="primary" data-act="tab" data-tab="event">Go to Event</button></section>`;
   }
-  if (!S().scoutName) {
-    return `<section class="card"><h2>Who is scouting?</h2>
-      <label>Scout name<input data-set="scoutName" value="" placeholder="First name" autocomplete="off"></label>
-      <button class="primary" data-act="rerender">Continue</button></section>`;
+  if (!S().scoutName || ui.newScout) {
+    return `<section class="card"><h2>Who is scouting${S().slot ? ' ' + posLabel(S().slot) : ''} on this iPad?</h2>
+      <label>Scout's name<input id="newScoutName" value="" placeholder="First and last name" autocomplete="off" autocapitalize="words"></label>
+      ${S().slot ? '' : `<span class="flabel">Position</span>${positionPicker()}`}
+      <div class="btnrow"><button class="primary" data-act="startScout">Start scouting</button>
+      ${ui.newScout && S().scoutName ? `<button class="ghost" data-act="cancelNewScout">Cancel (keep ${esc(S().scoutName)})</button>` : ''}</div>
+      <p class="muted small">Every record saved from now on is marked with this name and position, so you can see who covered each match.</p></section>`;
   }
   return `
+    ${scoutBar()}
     <div class="seg wide">
       <button data-act="scoutMode" data-v="match" class="${ui.scoutMode === 'match' ? 'on' : ''}">Match scouting</button>
       <button data-act="scoutMode" data-v="pit" class="${ui.scoutMode === 'pit' ? 'on' : ''}">Pit scouting</button>
@@ -567,7 +614,7 @@ function matchForm(ev) {
         <span>${sl[0] === 'R' ? 'Red' : 'Blue'} ${sl[1]}</span><b>${t || '—'}</b><small>${other ? 'Other league' : esc(teamName(t))}</small></button>`;
     }).join('')}</div>
       ${mf.skip && !mf.tm ? `<div class="banner warn skip">Your robot this match (${mf.skip}) isn't in ${esc((state.league && state.league.name) || 'your league')}. Nothing to scout. <button class="primary" data-act="mt" data-d="1">Next match →</button></div>` : ''}
-      <p class="muted small">${S().slot ? `Your position is remembered as <b>${S().slot[0] === 'R' ? 'Red' : 'Blue'} ${S().slot[1]}</b>; the team fills in automatically each match.` : 'Tap your assigned robot position. It is remembered for the next match.'}</p>` :
+      <p class="muted small">${S().slot ? `This iPad scouts <b>${posLabel(S().slot)}</b>, so the team fills in automatically each match.` : 'Tap the robot position you are scouting, or set this iPad\'s position on the Event tab.'}</p>` :
       `<p class="muted small">No schedule for match ${mf.mt}. Enter the team and alliance.</p>`}
     <div class="grid2">
       <label>Team<input data-mf="tm" data-type="int" value="${mf.tm || ''}" inputmode="numeric" placeholder="Team #"></label>
@@ -777,7 +824,7 @@ function logScan(text, kind = 'ok') {
 async function handleMessage(obj) {
   if (obj.k === 'rec') {
     let n = 0, u = 0, same = 0;
-    const all = [...(obj.m || []).map(a => fromArr(a, 'm')), ...(obj.p || []).map(a => fromArr(a, 'p'))];
+    const all = [...(obj.m || []).map(a => fromArr(a, 'm')), ...(obj.p || []).map(a => fromArr(a, 'p')), ...(obj.s || []).map(a => fromArr(a, 's'))];
     for (const r of all) {
       const res = upsertRecord(r);
       if (res === 'new') n++; else if (res === 'updated') u++; else same++;
@@ -896,6 +943,7 @@ function recMessage(recs) {
     k: 'rec', dv: S().deviceId, sc: S().scoutName,
     m: recs.filter(r => r.t === 'm').map(toArr),
     p: recs.filter(r => r.t === 'p').map(toArr),
+    s: recs.filter(r => r.t === 's').map(toArr),
   };
 }
 
@@ -926,9 +974,95 @@ function hiddenNote(n) {
 
 // ---------------------------------------------------------------- MEET view (this event)
 
+function meetSwitch() {
+  const v = ui.meetView || 'stats';
+  return `<div class="seg wide">
+    <button data-act="meetView" data-v="stats" class="${v === 'stats' ? 'on' : ''}">Team stats</button>
+    <button data-act="meetView" data-v="coverage" class="${v === 'coverage' ? 'on' : ''}">Scouting coverage</button>
+  </div>`;
+}
+
+// Which robot positions were scouted in each match, by whom, and who was responsible for any that were missed.
+function viewCoverage(ev) {
+  const recs = eventRecords(ev.code);
+  const mrecs = recs.filter(r => r.t === 'm');
+  const shifts = recs.filter(r => r.t === 's').sort((a, b) => a.ts - b.ts);
+  const live = liveFor(ev.code);
+  const L = (live && live.m) || {};
+  const playedOfficial = Object.values(L).filter(x => x.rs !== null && x.rs !== undefined).map(x => x.n);
+  const lastPlayed = Math.max(0, ...playedOfficial, ...mrecs.map(r => Number(r.mt) || 0));
+  const matches = (ev.matches || []).slice().sort((a, b) => a.n - b.n);
+  if (!matches.length) return `<section class="card"><h2>Scouting coverage</h2><p class="muted">Coverage needs the match schedule for ${esc(ev.code)}.</p></section>`;
+
+  const legacyPos = sc => { const m = /^(red|blue)\s*([12])$/i.exec(String(sc || '').trim()); return m ? m[1][0].toUpperCase() + m[2] : ''; };
+  const posOf = r => stationOf(r.mt, r.tm) || r.ps || legacyPos(r.sc);
+  const by = {};
+  for (const r of mrecs) (by[r.mt + '|' + r.tm] = by[r.mt + '|' + r.tm] || []).push(r);
+  const responsible = (p, n) => {
+    const sh = shifts.filter(x => x.ps === p && (Number(x.mt) || 0) <= n);
+    if (sh.length) return { name: sh[sh.length - 1].sc, sure: true };
+    const at = mrecs.filter(r => posOf(r) === p).sort((a, b) => a.mt - b.mt);
+    const before = at.filter(r => r.mt < n).pop(), after = at.find(r => r.mt > n);
+    if (before && after && before.sc !== after.sc) return { name: `${before.sc} or ${after.sc}`, sure: false };
+    const r = before || after;
+    return { name: r ? r.sc : '', sure: false };
+  };
+
+  const pos = POSITIONS.map(([p, label]) => ({ p, label, need: 0, got: 0, missing: [], scouts: new Set() }));
+  const missingBy = {};
+  const rows = matches.map(m => {
+    const cells = POSITIONS.map(([p], i) => {
+      const t = (p[0] === 'R' ? m.r : m.b)[Number(p[1]) - 1];
+      const P = pos[i];
+      if (!t) return { cls: 'none', html: '–' };
+      const list = by[m.n + '|' + t] || [];
+      if (!inScope(t, ev)) return { cls: 'skip', html: `<b>${t}</b><small>other league</small>` };
+      if (list.length) {
+        if (m.n <= lastPlayed) { P.need++; P.got++; }
+        list.forEach(r => P.scouts.add(r.sc));
+        return { cls: 'ok', html: `<b>${t}</b><small>${list.map(r => esc(r.sc)).join(', ')}</small>` };
+      }
+      if (m.n > lastPlayed) return { cls: 'later', html: `<b>${t}</b><small>not played yet</small>` };
+      P.need++;
+      const who = responsible(p, m.n);
+      P.missing.push({ n: m.n, who });
+      const key = who.name || 'No scout signed in';
+      (missingBy[key] = missingBy[key] || []).push(`Q${m.n} ${posLabel(p)}`);
+      return { cls: 'miss', html: `<b>${t}</b><small>missing${who.name ? ' · ' + esc(who.name) + (who.sure ? '' : '?') : ''}</small>` };
+    });
+    return { m, cells };
+  });
+  const shown = ui.covMissingOnly ? rows.filter(r => r.cells.some(c => c.cls === 'miss')) : rows;
+  const totalNeed = pos.reduce((a, x) => a + x.need, 0), totalGot = pos.reduce((a, x) => a + x.got, 0);
+
+  return `
+  <section class="card">
+    <h2>Scouting coverage · ${esc(ev.name)}</h2>
+    <p class="muted small">${lastPlayed ? `Through Q${lastPlayed}: <b>${totalGot} of ${totalNeed}</b> robot-matches scouted (${totalNeed ? Math.round(100 * totalGot / totalNeed) : 0}%).` : 'No matches played yet.'}
+      Other-league robots at league events aren't counted.</p>
+    <div class="covsum">${pos.map(x => `<div class="covpos ${x.p[0] === 'R' ? 'red' : 'blue'}">
+      <b>${x.label}</b> <span>${x.got}/${x.need}</span>
+      <small>${x.scouts.size ? 'Scouts: ' + [...x.scouts].map(esc).join(', ') : 'No records yet'}</small>
+      ${x.missing.length ? `<small class="miss">Missed: ${x.missing.map(mm => `Q${mm.n}`).join(', ')}</small>` : ''}
+    </div>`).join('')}</div>
+    ${Object.keys(missingBy).length ? `<h3>Missed matches by scout</h3><ul class="notes">${Object.entries(missingBy).map(([who, list]) =>
+      `<li><b>${esc(who)}</b>: ${list.length} missed: ${esc(list.join(', '))}</li>`).join('')}</ul>
+      <p class="muted small">The name comes from who was signed in to that position's iPad at the time. A "?" means nobody signed in, so it's a best guess from the scouts before and after the gap.</p>` : ''}
+    <label class="check"><input type="checkbox" data-change="covMissingOnly" ${ui.covMissingOnly ? 'checked' : ''}> Show only matches with a missed robot</label>
+    <div class="tablewrap"><table class="tbl cov">
+      <thead><tr><th>Match</th>${POSITIONS.map(([p, l]) => `<th class="${p[0] === 'R' ? 'red' : 'blue'}">${l}</th>`).join('')}</tr></thead>
+      <tbody>${shown.map(r => `<tr><td class="mn">Q${r.m.n}</td>${r.cells.map(c => `<td class="cv ${c.cls}">${c.html}</td>`).join('')}</tr>`).join('')}</tbody>
+    </table></div>
+    ${shifts.length ? `<h3>Scout sign-ins</h3><div class="tablewrap"><table class="tbl small">
+      <thead><tr><th>Position</th><th>Scout</th><th>From match</th><th>Time</th></tr></thead>
+      <tbody>${shifts.map(x => `<tr><td>${esc(posLabel(x.ps) || 'Any')}</td><td>${esc(x.sc)}</td><td>Q${x.mt}</td><td>${new Date(x.ts * 1000).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}</td></tr>`).join('')}</tbody></table></div>` : ''}
+  </section>`;
+}
+
 function viewTeams() {
   const { ev, stats, hidden } = computeEvent();
   if (!ev) return `<section class="card"><p>Load an event first.</p></section>`;
+  if ((ui.meetView || 'stats') === 'coverage') return meetSwitch() + viewCoverage(ev);
   const showOpr = S().show.opr && Object.keys(state.official.opr || {}).length > 0;
   const q = ui.filter.trim().toLowerCase();
   let rows = stats.filter(s => !q || String(s.team).includes(q) || teamName(s.team).toLowerCase().includes(q));
@@ -941,6 +1075,7 @@ function viewTeams() {
   const cols = showOpr ? [...TEAM_COLS, ['opr', 'OPR']] : TEAM_COLS;
   const our = Number(S().ourTeam);
   return `
+  ${meetSwitch()}
   <section class="card">
     <h2>This meet · ${esc(ev.name)}</h2>
     ${hiddenNote(hidden)}
@@ -1066,6 +1201,148 @@ function teamModal(t) {
 function partsBars(c) {
   const parts = [['role', 'Roles'], ['auto', 'AUTO'], ['rp', 'RP odds'], ['rel', 'Reliable']];
   return `<div class="bars">${parts.map(([k, l]) => `<div class="bar"><span>${l}</span><i><em style="width:${Math.round(c.parts[k] * 100)}%"></em></i><b>${Math.round(c.parts[k] * 100)}</b></div>`).join('')}</div>`;
+}
+
+// ---------------------------------------------------------------- SCHEDULE view (watch list)
+
+// Distinct colours for watched teams (none are pure red or blue, which mean alliances here).
+const TEAM_COLORS = ['#7c3aed', '#0f9d8a', '#e8590c', '#d6336c', '#5c940d', '#0b7285', '#a35200', '#5f3dc4', '#c2255c', '#2b8a3e'];
+
+function watchList() {
+  const s = S();
+  const our = Number(s.ourTeam);
+  const list = [];
+  if (s.watchOurs !== false && our) list.push(our);
+  for (const t of (s.watch || []).map(Number)) if (t && !list.includes(t)) list.push(t);
+  return list;
+}
+
+function fmtTime(v) {
+  if (!v) return '';
+  const str = String(v);
+  if (/(Z|[+-]\d\d:?\d\d)$/.test(str)) {
+    const d = new Date(str);
+    if (!isNaN(d)) return d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+  }
+  const m = str.match(/T(\d\d):(\d\d)/);
+  if (!m) return '';
+  let h = Number(m[1]);
+  const ap = h >= 12 ? 'PM' : 'AM';
+  h = h % 12 || 12;
+  return `${h}:${m[2]} ${ap}`; // FIRST gives local event time without a time zone
+}
+
+function fmtDay(v) {
+  if (!v) return '';
+  const m = String(v).match(/^(\d{4})-(\d\d)-(\d\d)/);
+  if (!m) return '';
+  return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])).toLocaleDateString([], { weekday: 'short' });
+}
+
+function viewSchedule() {
+  const ev = activeEvent();
+  if (!ev) return `<section class="card"><p>Load an event first (Event tab).</p></section>`;
+  const s = S();
+  const our = Number(s.ourTeam);
+  const watch = (s.watch || []).map(Number);
+  const list = watchList();
+  const color = {};
+  list.forEach((t, i) => { color[t] = TEAM_COLORS[i % TEAM_COLORS.length]; });
+  const W = new Set(list);
+  const live = liveFor(ev.code);
+  const L = (live && live.m) || {};
+  const matches = (ev.matches || []).map(m => {
+    const x = L[m.n] || {};
+    return { n: m.n, r: m.r, b: m.b, time: x.time || null, actual: x.actual || null, rs: x.rs ?? null, bs: x.bs ?? null };
+  });
+  const played = m => m.rs !== null && m.bs !== null;
+  const lastScouted = Math.max(0, ...eventRecords(ev.code, 'm').map(r => Number(r.mt) || 0));
+  const haveResults = matches.some(played);
+  const done = m => (haveResults ? played(m) : m.n <= lastScouted);
+  const rows = matches.filter(m => [...m.r, ...m.b].some(t => W.has(t)));
+  const nextN = (rows.find(m => !done(m)) || {}).n;
+  const shown = ui.schedUpcoming ? rows.filter(m => !done(m)) : rows;
+  const days = new Set(matches.map(m => String(m.time || '').slice(0, 10)).filter(Boolean));
+  const when = m => (m.time ? `${days.size > 1 ? fmtDay(m.time) + ' ' : ''}${fmtTime(m.time)}` : '');
+
+  const pos = (m, t) => (m.r.includes(t) ? `Red ${m.r.indexOf(t) + 1}` : m.b.includes(t) ? `Blue ${m.b.indexOf(t) + 1}` : '');
+  const sideOf = (m, t) => (m.r.includes(t) ? 'R' : m.b.includes(t) ? 'B' : '');
+  const result = (m, t) => {
+    if (!played(m)) return '';
+    const mine = sideOf(m, t) === 'R' ? m.rs : m.bs, theirs = sideOf(m, t) === 'R' ? m.bs : m.rs;
+    return mine > theirs ? 'W' : mine < theirs ? 'L' : 'T';
+  };
+  const record = t => {
+    const r = { W: 0, L: 0, T: 0 };
+    for (const m of matches) if (sideOf(m, t) && played(m)) r[result(m, t)]++;
+    return r;
+  };
+  const cell = t => {
+    const w = W.has(t);
+    const cls = ['st', w ? 'w' : '', !inScope(t, ev) ? 'other' : ''].join(' ');
+    return `<button class="${cls}" ${w ? `style="--tc:${color[t]}"` : ''} data-act="team" data-team="${t}" title="${esc(teamName(t))}">${t}</button>`;
+  };
+  const tags = m => [...m.r, ...m.b].filter(t => W.has(t)).map(t => {
+    const res = result(m, t);
+    return `<span class="tres" style="--tc:${color[t]}"><i></i><b>${t}</b> ${pos(m, t)}${res ? ` <span class="wl ${res}">${res}</span>` : ''}</span>`;
+  }).join('');
+  const relation = (m, t) => (!our || t === our || !sideOf(m, our) ? '' : sideOf(m, t) === sideOf(m, our) ? 'with' : 'vs');
+
+  const legend = list.map(t => {
+    const ms = matches.filter(m => sideOf(m, t));
+    const rec = record(t);
+    const nxt = ms.find(m => !done(m));
+    const at = t in (ev.teams || {}) || ms.length > 0;
+    return `<div class="tcard" style="--tc:${color[t]}">
+      <div class="tcard-h"><i></i><b>${t}</b> <span class="tname">${esc(teamName(t))}</span>${t === our ? ' <span class="pill">us</span>' : ''}</div>
+      ${!at ? `<div class="muted small">Not at ${esc(ev.code)}</div>` : `
+      <div class="small">${haveResults ? `Record here <b>${rec.W}-${rec.L}-${rec.T}</b> · ` : ''}${nxt ? `Next <b>Q${nxt.n}</b>${nxt.time ? ' at <b>' + when(nxt) + '</b>' : ''} · ${pos(nxt, t)}` : ms.length ? 'All matches done' : 'Not on the schedule yet'}</div>
+      <div class="ms">${ms.map(m => { const r = result(m, t); const rel = relation(m, t); return `<span class="${sideOf(m, t) === 'R' ? 'r' : 'b'} ${done(m) ? 'done' : ''}" title="${pos(m, t)}${rel === 'with' ? ' · with us' : rel === 'vs' ? ' · against us' : ''}">Q${m.n}${r ? ` <small class="wl ${r}">${r}</small>` : ''}</span>`; }).join('')}</div>`}
+    </div>`;
+  }).join('');
+
+  const pickable = Object.keys(ev.teams || {}).map(Number).filter(t => t !== our && inScope(t, ev)).sort((a, b) => a - b);
+  const o = state.official;
+  const liveStatus = official.liveBusy ? 'Updating…' : live ? `Times${haveResults ? ' & results' : ''} from ${esc(live.src)} · updated ${ago(live.at)}` : o.liveErr ? esc(o.liveErr) : 'Times and results not loaded yet';
+
+  return `
+  <section class="card">
+    <h2>Teams I'm watching</h2>
+    <div class="chips watchchips">
+      ${our ? `<label class="check chip ${s.watchOurs !== false ? 'on wchip' : ''}" ${s.watchOurs !== false ? `style="--tc:${color[our]}"` : ''}><input type="checkbox" data-change="watchOurs" ${s.watchOurs !== false ? 'checked' : ''}> <b>${our}</b>&nbsp;(our team)</label>` : ''}
+      ${watch.filter(t => t !== our).map(t => `<button class="chip wchip" style="--tc:${color[t]}" data-act="watchToggle" data-team="${t}" title="Stop watching"><b>${t}</b> ${esc(teamName(t))}<span class="x">✕</span></button>`).join('')}
+      ${!watch.length && !our ? '<span class="muted">No teams yet. Add some below.</span>' : ''}
+    </div>
+    <div class="row">
+      <input id="watchInput" data-ui="watchInput" value="${esc(ui.watchInput || '')}" placeholder="Add team numbers, e.g. 12345, 23456" inputmode="numeric" autocomplete="off">
+      <button class="primary" data-act="watchAdd">Add</button>
+      <button data-act="watchPick">${ui.watchPick ? 'Done picking' : `Pick from ${esc(ev.code)}`}</button>
+      ${watch.length ? '<button class="ghost danger" data-act="watchClear">Clear</button>' : ''}
+    </div>
+    ${ui.watchPick ? `<div class="chips">${pickable.map(t => `<button class="chip ${watch.includes(t) ? 'on' : ''}" data-act="watchToggle" data-team="${t}"><b>${t}</b> ${esc(teamName(t))}</button>`).join('')}</div>` : ''}
+  </section>
+
+  ${list.length ? `<section class="card">
+    <h2>Schedule · ${esc(ev.name)}</h2>
+    <div class="row sched-bar">
+      <button data-act="refreshLive" ${official.liveBusy ? 'disabled' : ''}>Update times &amp; results</button>
+      <span class="muted small">${liveStatus}</span>
+    </div>
+    ${!matches.length ? `<p class="banner warn">There's no match schedule for ${esc(ev.code)} yet. It's usually posted shortly before qualification matches start. Tap <b>Update times &amp; results</b> once it's out, or type it in with <b>Edit teams &amp; schedule</b> on the Event tab.</p>` : `
+    <div class="tcards">${legend}</div>
+    <label class="check"><input type="checkbox" data-change="schedUpcoming" ${ui.schedUpcoming ? 'checked' : ''}> Hide finished matches</label>
+    ${shown.length ? `<div class="tablewrap"><table class="tbl sched">
+      <thead><tr><th>Match</th><th>Time</th><th>Red</th><th>Blue</th><th>Score</th><th>Our teams</th></tr></thead>
+      <tbody>${shown.map(m => `<tr class="${done(m) ? 'done' : ''} ${m.n === nextN ? 'next' : ''}">
+        <td class="mn">Q${m.n}${m.n === nextN ? ' <span class="pill ok">next</span>' : ''}</td>
+        <td class="tm">${when(m) || '–'}</td>
+        <td class="side red">${m.r.map(cell).join('')}</td>
+        <td class="side blue">${m.b.map(cell).join('')}</td>
+        <td class="scorecell">${played(m) ? `<span class="${m.rs > m.bs ? 'win' : ''} r">${m.rs}</span>–<span class="${m.bs > m.rs ? 'win' : ''} b">${m.bs}</span>` : ''}</td>
+        <td>${tags(m)}</td>
+      </tr>`).join('')}</tbody></table></div>` : `<p class="muted">${rows.length ? 'All of these matches are finished.' : 'None of these teams are on the schedule.'}</p>`}
+    <p class="muted small">Each watched team keeps its own colour. W/L/T and scores come from official results. Tap any team number for its stats.</p>`}
+  </section>` : ''}`;
 }
 
 // ---------------------------------------------------------------- LEAGUE view (whole season)
@@ -1316,6 +1593,59 @@ const actions = {
     showQR(`Event ${ev.code}`, { k: 'evt', d: ev, c: cloudCfgForQR(), l: hasLeague() ? state.league : null });
   },
   team: el => teamModal(Number(el.dataset.team)),
+  setPosition: el => {
+    state.settings.slot = el.dataset.v;
+    persist('settings');
+    if (ui.mf && !ui.mf.id) applySlot(ui.mf);
+    logShift();
+    render();
+  },
+  newScout: () => { ui.newScout = true; render(); setTimeout(() => { const i = $('#newScoutName'); if (i) i.focus(); }, 50); },
+  cancelNewScout: () => { ui.newScout = false; render(); },
+  startScout: () => {
+    const name = (($('#newScoutName') || {}).value || '').trim();
+    if (!name) return toast("Enter the scout's name.", 'err');
+    state.settings.scoutName = name;
+    persist('settings');
+    ui.newScout = false;
+    logShift();
+    toast(`${name} is scouting${S().slot ? ' ' + posLabel(S().slot) : ''}`, 'ok');
+    render();
+  },
+  meetView: el => { ui.meetView = el.dataset.v; render(); },
+  watchToggle: el => {
+    const t = Number(el.dataset.team);
+    const list = (S().watch || []).map(Number);
+    state.settings.watch = list.includes(t) ? list.filter(x => x !== t) : [...list, t];
+    persist('settings');
+    render();
+  },
+  watchAdd: () => {
+    const nums = String(ui.watchInput || ($('#watchInput') || {}).value || '').match(/\d{1,6}/g) || [];
+    if (!nums.length) return toast('Type one or more team numbers.', 'err');
+    const list = (S().watch || []).map(Number);
+    const add = nums.map(Number).filter(t => t && !list.includes(t));
+    state.settings.watch = [...list, ...add];
+    persist('settings');
+    ui.watchInput = '';
+    toast(add.length ? `Watching ${add.join(', ')}` : 'Already watching those teams', 'ok');
+    render();
+  },
+  watchPick: () => { ui.watchPick = !ui.watchPick; render(); },
+  refreshLive: async () => {
+    if (!navigator.onLine) return toast('This iPad is offline. Showing the last download.', 'err');
+    const p = refreshLive(activeEvent(), { force: true });
+    render();
+    await p;
+    if (state.official.liveErr) toast(state.official.liveErr, 'err');
+    render();
+  },
+  watchClear: () => {
+    if (!confirm('Stop watching all teams?')) return;
+    state.settings.watch = [];
+    persist('settings');
+    render();
+  },
   scope: el => {
     const ev = activeEvent();
     if (!ev) return;
@@ -1399,7 +1729,10 @@ const actions = {
   },
   slot: el => {
     const sl = el.dataset.v;
+    if (S().slot && S().slot !== sl && !confirm(`This iPad is set to scout ${posLabel(S().slot)}. Switch it to ${posLabel(sl)}?`)) return;
+    const changed = S().slot !== sl;
     state.settings.slot = sl; persist('settings');
+    if (changed) logShift();
     ui.mf.al = sl[0];
     const t = Number(el.dataset.team) || 0;
     if (t && !inScope(t, activeEvent())) { ui.mf.tm = 0; ui.mf.skip = t; }
@@ -1459,7 +1792,8 @@ const actions = {
       }
     }
     if (!inScope(mf.tm, activeEvent()) && !confirm(`Team ${mf.tm} isn't in your league, so it's hidden at this event. Save anyway?`)) return;
-    const rec = { ...mf, t: 'm', ev, sc: S().scoutName, ts: now(), id: mf.id || newId() };
+    const rec = { ...mf, t: 'm', ev, sc: mf.id && mf.sc ? mf.sc : S().scoutName, ts: now(), id: mf.id || newId() };
+    rec.ps = stationOf(rec.mt, rec.tm) || mf.ps || S().slot || '';
     delete rec.skip;
     state.records[rec.id] = rec;
     delete state.sent[rec.id];
@@ -1515,7 +1849,7 @@ const actions = {
 
   // Sync
   sendUnsent: () => {
-    const recs = unsentRecords();
+    const recs = [...unsentRecords(), ...eventRecords(undefined, 's').filter(r => isMine(r) && !state.sent[r.id])];
     if (!recs.length) return toast('Nothing new to send.');
     showQR(`${recs.length} records from ${S().scoutName || S().deviceId}`, recMessage(recs), recs.map(r => r.id));
   },
@@ -1645,6 +1979,12 @@ document.addEventListener('change', async e => {
     ui.filter = el.value; renderSoon();
   } else if (el.dataset.change === 'lfilter') {
     ui.lfilter = el.value; renderSoon();
+  } else if (el.dataset.change === 'watchOurs') {
+    state.settings.watchOurs = el.checked; persist('settings'); render();
+  } else if (el.dataset.change === 'covMissingOnly') {
+    ui.covMissingOnly = el.checked; render();
+  } else if (el.dataset.change === 'schedUpcoming') {
+    ui.schedUpcoming = el.checked; render();
   } else if (el.dataset.change === 'hideDnp') {
     ui.hideDnp = el.checked; render();
   } else if (el.dataset.w) {
@@ -1655,6 +1995,8 @@ document.addEventListener('change', async e => {
     renderSoon();
   } else if (el.dataset.mf === 'tm' || el.dataset.pf === 'tm') {
     renderSoon();
+  } else if (el.dataset.set === 'scoutName') {
+    logShift();
   } else if (el.dataset.set === 'cloudUrl' || el.dataset.set === 'cloudKey') {
     if (ui.cloudUrlChanged) { ui.cloudUrlChanged = false; resetCloudProgress(); }
     cloud.lastErr = '';
@@ -1668,6 +2010,7 @@ document.addEventListener('change', async e => {
 document.addEventListener('keydown', e => {
   if (e.key === 'Enter' && e.target.id === 'evCode') actions.dlScout(e.target);
   if (e.key === 'Enter' && e.target.id === 'evSearch') actions.searchEv();
+  if (e.key === 'Enter' && e.target.id === 'watchInput') actions.watchAdd();
   if (e.key === 'Escape') closeModal();
 });
 
@@ -1702,7 +2045,7 @@ cloud.onChange = changed => {
   if (!changed) return;
   const typing = document.activeElement && /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName);
   const modalOpen = !$('#modal').classList.contains('hidden');
-  if (['teams', 'league', 'partners', 'event'].includes(ui.tab) && !typing && !modalOpen) render();
+  if (['teams', 'schedule', 'league', 'partners', 'event'].includes(ui.tab) && !typing && !modalOpen) render();
 };
 official.onChange = () => {
   const typing = document.activeElement && /INPUT|TEXTAREA|SELECT/.test(document.activeElement.tagName);
@@ -1710,6 +2053,8 @@ official.onChange = () => {
   if (['teams', 'league', 'partners', 'event'].includes(ui.tab) && !typing && !modalOpen) render();
 };
 setInterval(renderHeader, 30000);
+// Keep match times and results fresh while someone is looking at the Schedule tab.
+setInterval(() => { if (ui.tab === 'schedule' && !document.hidden) refreshLive(activeEvent()); }, 60000);
 
 // First run: start on Scout if everything is set up
 if (activeEvent() && S().scoutName) ui.tab = 'scout';

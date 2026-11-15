@@ -4,9 +4,9 @@
 // Falls back to FTCScout for per-meet results when FIRST isn't set up yet.
 import { state, persist, hasLeague, saveLeague, activeEvent } from './store.js';
 import { callScript, cloudConfigured } from './cloud.js';
-import { ftcscoutQuickStats, ftcscoutTeamResults } from './api.js';
+import { ftcscoutQuickStats, ftcscoutTeamResults, ftcscoutLive } from './api.js';
 
-export const official = { busy: false, progress: '', onChange: null };
+export const official = { busy: false, progress: '', onChange: null, liveBusy: false };
 
 const STALE_MS = 3 * 60 * 60 * 1000; // refresh automatically when older than 3 hours
 
@@ -120,4 +120,57 @@ export function meetsFor(team) {
     if (r) out.push({ code: m.code, name: m.name, date: m.date, ...r, of: (m.rankings || []).length });
   }
   return out;
+}
+
+// ---------- match times & results for the Schedule tab ----------
+
+export function liveFor(code) {
+  return ((state.official.live || {})[code]) || null;
+}
+
+export async function refreshLive(ev, { force = false } = {}) {
+  if (!ev || official.liveBusy || navigator.onLine === false) return;
+  const o = state.official;
+  o.live = o.live || {};
+  const cur = o.live[ev.code];
+  if (!force && cur && Date.now() - cur.at < 90 * 1000) return;
+  official.liveBusy = true;
+  notify();
+  const season = Number(ev.season) || Number(state.settings.season) || 2026;
+  let matches = null, src = '', err = '';
+  try {
+    const oldScript = o.liveOld && Date.now() - o.liveOld < 30 * 60 * 1000;
+    if (cloudConfigured() && (force || (o.firstErr !== 'nokey' && !oldScript))) {
+      try {
+        // 'since' keeps an older script (which doesn't know this action) on its cheap no-change path
+        const j = await callScript({ action: 'matches', season, event: ev.code, since: Number(state.settings.cloudCursor) || 0 }, 60000);
+        if (j.kind !== 'matches') { o.liveOld = Date.now(); throw new Error('Update the Google Sheet script (README section 7) to get FIRST match times and results.'); }
+        o.liveOld = 0;
+        matches = j.matches;
+        src = 'FIRST';
+      } catch (e) {
+        if (e.code === 'nokey') o.firstErr = 'nokey'; else err = e.message || String(e);
+      }
+    }
+    if (!matches) {
+      try { matches = await ftcscoutLive(season, ev.code); src = 'FTCScout'; } catch (e) { err = err || e.message || String(e); }
+    }
+    if (matches) {
+      const m = {};
+      for (const x of matches) m[x.n] = x;
+      o.live[ev.code] = { at: Date.now(), src, m };
+      o.liveErr = '';
+      // If we had no schedule yet, use the one that just arrived.
+      if ((!ev.matches || !ev.matches.length) && matches.some(x => x.red.length && x.blue.length)) {
+        ev.matches = matches.filter(x => x.red.length || x.blue.length).map(x => ({ n: x.n, r: x.red, b: x.blue }));
+        persist('events');
+      }
+    } else {
+      o.liveErr = err || 'No match data yet.';
+    }
+    persist('official');
+  } finally {
+    official.liveBusy = false;
+    notify();
+  }
 }
