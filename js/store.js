@@ -40,6 +40,9 @@ export const DEFAULT_SETTINGS = {
   show: { opr: true, rank: true, meets: true }, // official-data columns shown on the League tab
   watch: [],                  // team numbers whose matches the Schedule tab lists
   watchOurs: true,            // also list our own matches
+  // League tab: stage 'auto' follows the season (league → region championship → worlds);
+  // league '' = our own league; champ / worlds / div narrow the championship views.
+  lview: { stage: 'auto', league: '', champ: '', worlds: '', div: '' },
 };
 
 let storageOK = true;
@@ -72,6 +75,7 @@ export const state = {
     ...savedSettings,
     weights: { ...DEFAULT_SETTINGS.weights, ...(savedSettings.weights || {}) },
     show: { ...DEFAULT_SETTINGS.show, ...(savedSettings.show || {}) },
+    lview: { ...DEFAULT_SETTINGS.lview, ...(savedSettings.lview || {}) },
   },
   events: load(K.events, {}),
   records: load(K.records, {}),
@@ -81,11 +85,16 @@ export const state = {
   cloudSentEv: load(K.cloudSentEv, {}),
   cloudDel: load(K.cloudDel, {}),
   league: load(K.league, null),
-  official: load(K.official, null) || emptyOfficial(),
+  official: { ...emptyOfficial(), ...(load(K.official, null) || {}) },
 };
 
 export function emptyOfficial() {
-  return { opr: {}, oprAt: 0, rankings: {}, rankAt: 0, meets: [], meetsAt: 0, leagueInfo: null, firstErr: '', scoutErr: '' };
+  return {
+    opr: {}, oprAt: 0, oprT: {}, rankings: {}, rankAt: 0, meets: [], meetsAt: 0, leagueInfo: null, leagues: [], firstErr: '', scoutErr: '',
+    views: {},     // other leagues picked on the League tab: 'L:<code>' -> { code, name, teams, rankings, meets, at, err }
+    stage: null,   // season calendar + championship fields: { at, src, region, lt, champs, worlds, leagueOf, err }
+    tmeets: {},    // team -> { at, list } season results per team (FTCScout), for championship views
+  };
 }
 
 // ---------------------------------------------------------------- league & event scope
@@ -241,7 +250,7 @@ export function mergeBackup(obj) {
 export function clearAll() {
   const keepId = state.settings.deviceId;
   for (const k of Object.values(K)) { try { localStorage.removeItem(k); } catch (e) { /* ignore */ } }
-  state.settings = { ...DEFAULT_SETTINGS, weights: { ...DEFAULT_SETTINGS.weights }, deviceId: keepId };
+  state.settings = { ...DEFAULT_SETTINGS, weights: { ...DEFAULT_SETTINGS.weights }, lview: { ...DEFAULT_SETTINGS.lview }, deviceId: keepId };
   state.events = {}; state.records = {}; state.picks = {}; state.sent = {};
   state.cloudSent = {}; state.cloudSentEv = {}; state.cloudDel = {};
   state.league = null; state.official = emptyOfficial();

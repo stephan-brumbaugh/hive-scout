@@ -383,3 +383,19 @@ button.listitem { justify-content: flex-start; }
 .tbl.cov td.miss { background: #fde4e4; }
 .tbl.cov td.miss small { color: var(--err); font-weight: 700; }
 .tbl.cov td.skip, .tbl.cov td.later { opacity: .5; }
+
+/* League tab: season stages, league picker, auto-update line */
+.stagebar { margin-bottom: .6rem; }
+.stagebar .seg.stages button { min-width: 92px; min-height: 44px; font-weight: 600; }
+.stagebar .seg.stages button small { font-weight: 500; opacity: .75; }
+.stagebar p { margin: .45rem 0 0; }
+.linkbtn { background: none; border: 0; padding: 0; min-height: 0; color: var(--blue); text-decoration: underline; font: inherit; cursor: pointer; }
+label.inline.lpick { flex-direction: row; align-items: center; gap: .5rem; margin: .2rem 0 .6rem; color: var(--ink); }
+label.inline.lpick select { min-width: 0; max-width: 100%; flex: 1 1 auto; }
+.updline { display: flex; align-items: center; justify-content: space-between; gap: .6rem; flex-wrap: wrap; margin: .2rem 0 .6rem; }
+.updline span { flex: 1 1 16rem; }
+.seg.divs { margin: .2rem 0 .6rem; }
+.seg.divs button { min-height: 40px; }
+.findev { margin-top: .6rem; padding: .7rem; border: 1px dashed var(--line); border-radius: 10px; }
+.findev .row { gap: .5rem; }
+.leaguecard h2 { margin-top: .4rem; }

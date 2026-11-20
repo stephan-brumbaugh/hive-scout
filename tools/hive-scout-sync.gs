@@ -13,7 +13,8 @@
  * UPDATING THIS SCRIPT LATER: paste the new version, Save, Run "setup" once (approve any new permission),
  * then Deploy > Manage deployments > pencil icon > Version: New version > Deploy. The URL stays the same.
  *
- * OFFICIAL FIRST DATA (league roster, league rankings, meet results): register for a free FTC Events API
+ * OFFICIAL FIRST DATA (league rosters and rankings, meet results, match times, and after the league
+ * tournaments the region championship and FIRST Championship fields): register for a free FTC Events API
  * key at https://ftc-events.firstinspires.org/services/API, then in Apps Script open Project Settings (gear)
  * > Script properties > Add: FIRST_USER = your API username, FIRST_KEY = your authorization key. Save.
  * No redeploy is needed after adding the key.
@@ -25,7 +26,7 @@
 const TEAM_KEY = 'PUT-YOUR-TEAM-KEY-HERE';
 
 const MAX_PULL = 600; // records returned per request
-const API_VERSION = 4;
+const API_VERSION = 5;
 const FIRST_BASE = 'https://ftc-api.firstinspires.org/v2.0';
 
 const REC_HEAD = ['id', 'seq', 'ts', 'type', 'event', 'team', 'match', 'device', 'deleted', 'json'];
@@ -80,9 +81,9 @@ function doPost(e) {
   }
   if (TEAM_KEY === 'PUT-YOUR-TEAM-KEY-HERE') return json_({ ok: false, error: 'Set TEAM_KEY in the Apps Script first.' });
   if (!req || req.key !== TEAM_KEY) return json_({ ok: false, error: 'Wrong team key' });
-  if (req.action === 'league' || req.action === 'matches') {
+  if (req.action === 'league' || req.action === 'matches' || req.action === 'stage') {
     try {
-      return json_(req.action === 'league' ? leagueData_(req) : matchesData_(req));
+      return json_(req.action === 'league' ? leagueData_(req) : req.action === 'stage' ? stageData_(req) : matchesData_(req));
     } catch (err) {
       return json_({ ok: false, error: String((err && err.message) || err) });
     }
@@ -306,14 +307,8 @@ function leagueData_(req) {
     code: String(l.code || l.leagueCode || ''), name: String(l.name || l.code || ''), parent: String(l.parentLeagueCode || ''),
   })).filter(l => l.code);
   out.leagues = leagues;
-  const memberCache = {};
-  const members = lc => {
-    if (!memberCache[lc]) {
-      const m = firstGet_('/' + season + '/leagues/members/' + encodeURIComponent(region) + '/' + encodeURIComponent(lc), 21600);
-      memberCache[lc] = (((m && (m.members || m.teams)) || [])).map(x => Number(typeof x === 'object' ? x.teamNumber : x)).filter(Boolean);
-    }
-    return memberCache[lc];
-  };
+  const names = {};
+  const members = lc => leagueMembers_(season, region, lc, names);
   let mine = null;
   if (wanted) {
     mine = leagues.filter(l => l.code === wanted)[0] || { code: wanted, name: wanted, parent: '' };
@@ -329,19 +324,25 @@ function leagueData_(req) {
     out.region = region;
     return out;
   }
-  out.league = { region: region, code: mine.code, name: mine.name, members: members(mine.code) };
-
-  const rk = firstGet_('/' + season + '/leagues/rankings/' + encodeURIComponent(region) + '/' + encodeURIComponent(mine.code), 900);
-  out.rankings = ((rk && rk.rankings) || []).map(slimRank_);
+  const mem = members(mine.code);
+  const memNames = {};
+  mem.forEach(n => { if (names[n]) memNames[n] = names[n]; });
+  out.league = { region: region, code: mine.code, name: mine.name, members: mem, names: memNames };
 
   const today = new Date().toISOString().slice(0, 10);
+  let live = false;
   out.meets = leagueEvents_(season, region, mine.code, team)
     .filter(e => String(e.dateStart || '').slice(0, 10) <= today)
     .map(e => {
       const finished = String(e.dateEnd || e.dateStart || '').slice(0, 10) < today;
-      const r = firstGet_('/' + season + '/rankings/' + encodeURIComponent(e.code), finished ? 21600 : 600);
+      if (!finished) live = true;
+      const r = firstGet_('/' + season + '/rankings/' + encodeURIComponent(e.code), finished ? 21600 : 240);
       return { code: e.code, name: e.name, date: String(e.dateStart || '').slice(0, 10), type: e.typeName, rankings: ((r && r.rankings) || []).map(slimRank_) };
     });
+  // League standings change after every match on a meet day, so they are only cached briefly then.
+  const rk = firstGet_('/' + season + '/leagues/rankings/' + encodeURIComponent(region) + '/' + encodeURIComponent(mine.code), live ? 240 : 900);
+  out.rankings = ((rk && rk.rankings) || []).map(slimRank_);
+  out.live = live;
   return out;
 }
 
@@ -366,6 +367,120 @@ function leagueEvents_(season, region, code, team) {
   const list = Object.keys(byCode).map(k => byCode[k]).sort((a, b) => String(a.dateStart).localeCompare(String(b.dateStart)));
   try { cache.put(ck, JSON.stringify(list), 21600); } catch (err) { /* ignore */ }
   return list;
+}
+
+function leagueMembers_(season, region, lc, names) {
+  const m = firstGet_('/' + season + '/leagues/members/' + encodeURIComponent(region) + '/' + encodeURIComponent(lc), 21600);
+  return (((m && (m.members || m.teams)) || [])).map(x => {
+    if (x && typeof x === 'object') {
+      const n = Number(x.teamNumber);
+      if (n && names && (x.nameShort || x.nameFull)) names[n] = String(x.nameShort || x.nameFull);
+      return n;
+    }
+    return Number(x);
+  }).filter(Boolean);
+}
+
+function homeRegion_(season, team) {
+  const t = firstGet_('/' + season + '/teams?teamNumber=' + team, 21600);
+  const info = t && t.teams && t.teams[0];
+  return info ? String(info.homeRegion || '') : '';
+}
+
+// ---------------------------------------------------------------- season stages: region championship, then worlds
+
+// After the league tournaments, the League tab follows the teams that advanced: first to the region
+// championship, then to the FIRST Championship. FIRST's team list for each event is the advancement list.
+function stageData_(req) {
+  const creds = firstCreds_();
+  if (!creds.user || !creds.key) {
+    return { ok: false, error: 'nokey', message: 'Add FIRST_USER and FIRST_KEY in Apps Script > Project Settings > Script properties.' };
+  }
+  const season = Number(req.season) || 2026;
+  const team = Number(req.team) || 0;
+  let region = String(req.region || '').trim();
+  if (!region) {
+    if (!team) return { ok: false, error: 'Enter your team number in the app first.' };
+    region = homeRegion_(season, team);
+    if (!region) return { ok: false, error: 'FIRST does not list a home region for team ' + team + '.' };
+  }
+  const today = new Date().toISOString().slice(0, 10);
+  const cal = stageEvents_(season, region);
+  const detail = e => {
+    const started = !!e.start && e.start <= today;
+    const over = !!(e.end || e.start) && (e.end || e.start) < today;
+    const out = { code: e.code, name: e.name, start: e.start, end: e.end, div: e.div, league: e.league };
+    out.teams = eventTeams_(season, e.code, over ? 21600 : 1800);
+    out.rankings = [];
+    if (started) {
+      const r = firstGet_('/' + season + '/rankings/' + encodeURIComponent(e.code), over ? 21600 : 240);
+      out.rankings = ((r && r.rankings) || []).map(slimRank_);
+    }
+    return out;
+  };
+  const out = { ok: true, kind: 'stage', season: season, region: region, fetched: Date.now(), lt: cal.lt };
+  out.champs = cal.champs.map(detail);
+  out.worlds = cal.worlds.map(detail);
+  // Which league each region-championship team plays in, so the app can show where they came from.
+  const want = {};
+  out.champs.forEach(c => c.teams.forEach(t => { want[t.n] = true; }));
+  out.leagueOf = Object.keys(want).length ? leagueOf_(season, region, want) : {};
+  return out;
+}
+
+// League tournaments and championships for this region, plus every FIRST Championship event (and its divisions).
+function stageEvents_(season, region) {
+  const cache = CacheService.getScriptCache();
+  const ck = ('stage:' + season + ':' + region).slice(0, 240);
+  const hit = cache.get(ck);
+  if (hit) return JSON.parse(hit);
+  const out = { lt: [], champs: [], worlds: [] };
+  const all = firstGet_('/' + season + '/events', 0);
+  ((all && all.events) || []).forEach(e => {
+    const kind = String(e.typeName || '') + ' ' + String(e.type || '');
+    const rc = String(e.regionCode || '');
+    const slim = {
+      code: String(e.code), name: String(e.name || e.code),
+      start: String(e.dateStart || '').slice(0, 10), end: String(e.dateEnd || e.dateStart || '').slice(0, 10),
+      league: String(e.leagueCode || '').split('/').pop(), div: String(e.divisionCode || ''),
+    };
+    if (/first\s*championship/i.test(kind)) out.worlds.push(slim);
+    else if (rc && rc !== region) return;
+    else if (/league\s*tournament/i.test(kind)) out.lt.push(slim);
+    else if (/championship/i.test(kind)) out.champs.push(slim);
+  });
+  ['lt', 'champs', 'worlds'].forEach(k => out[k].sort((a, b) => String(a.start).localeCompare(String(b.start)) || a.code.localeCompare(b.code)));
+  try { cache.put(ck, JSON.stringify(out), 21600); } catch (err) { /* ignore */ }
+  return out;
+}
+
+// Every team registered for an event (FIRST pages long lists).
+function eventTeams_(season, code, ttl) {
+  const out = [];
+  let page = 1, pages = 1;
+  do {
+    const j = firstGet_('/' + season + '/teams?eventCode=' + encodeURIComponent(code) + (page > 1 ? '&page=' + page : ''), ttl);
+    if (!j) break;
+    (j.teams || []).forEach(t => {
+      const n = Number(t.teamNumber);
+      if (n) out.push({ n: n, name: String(t.nameShort || t.nameFull || ''), home: String(t.homeRegion || '') });
+    });
+    pages = Number(j.pageTotal) || 1;
+    page++;
+  } while (page <= pages && page <= 20);
+  return out;
+}
+
+function leagueOf_(season, region, want) {
+  const ls = firstGet_('/' + season + '/leagues?regionCode=' + encodeURIComponent(region), 21600);
+  const leagues = ((ls && ls.leagues) || []).map(l => ({ code: String(l.code || l.leagueCode || ''), parent: String(l.parentLeagueCode || '') })).filter(l => l.code);
+  const parents = {};
+  leagues.forEach(l => { if (l.parent) parents[l.parent] = true; });
+  const out = {};
+  leagues.filter(l => !parents[l.code]).forEach(l => {
+    leagueMembers_(season, region, l.code).forEach(n => { if (want[n] && !out[n]) out[n] = l.code; });
+  });
+  return out;
 }
 
 // Qualification schedule (times) and results for one event, refreshed at most once a minute.

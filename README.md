@@ -137,20 +137,29 @@ The roster is shared with every iPad through the Google Sheet, and through **Sha
 - **State and other championships** show everyone.
 - The app picks automatically from the event type FTCScout or FIRST reports. Tap the other button to change it for that event.
 
-**League tab.** Every league team, all season, with every scout's data combined:
+**League tab.** It follows the season by itself, in three stages. The buttons at the top show where it is (**· now** marks the stage the season is in):
+- **League** (until your League Tournament is over): every team in a league, all season. It opens on your own league. Pick any other league in your region from the **League** menu to see its standings. Picking another league only changes what this tab shows; your scouting setup stays on your league.
+- **Region** (after your League Tournament): only the teams that advanced to your region championship (for Kansas–Missouri, the state championship). Teams that didn't advance are left out. The list fills in as each league tournament finishes. A **League** column shows where each team came from.
+- **Worlds** (after the region championship): only the teams at the FIRST Championship. It opens on your division if you're there, with buttons for each division and **All divisions**. A **From** column shows each team's home region.
+
+Tap another stage to look at it yourself. **Follow the season automatically** puts it back.
+
+The columns are the same in every stage, with every scout's data combined:
 - **Season est** and **Last meet**, with ▲▼ showing whether the last meet was better or worse than earlier ones.
 - HIVE launches, FLOWER pieces, park rate, fouls and breakdowns.
 - Three official-data toggles:
   - **FTCScout OPR** (and **Scouts − OPR**: green means your scouts saw more than the official estimate, red means less).
-  - **League rankings**: rank, ranking score, W-L-T.
-  - **Meet results**: rank and record at each meet.
+  - **Rankings**: league rank, championship rank or division rank, with ranking score and W-L-T.
+  - **Meet results / Season results**: rank and record at each event.
 
-Tap a team for a meet-by-meet table and a scouted-vs-official comparison.
+Tap a team for a meet-by-meet table, a scouted-vs-official comparison, and its rank at the region championship and worlds.
+
+**Always up to date.** While the League tab is open and the iPad is online, it checks for new results every 5 minutes on a day with a meet or championship, and every 30 minutes on other days. It also checks each time you open the tab. It only downloads what has changed, and the line under the title says when it last updated. **Update now** checks right away. Offline, it shows the last download.
 
 **Official data sources:**
 - **FTCScout OPR** downloads straight to each iPad.
-- **FIRST's league rankings and meet results** come through your Google Sheet script, which holds the FIRST API key so it never sits on the iPads. Until the key is added, meet results come from FTCScout.
-- Data refreshes by itself when it's over 3 hours old and the iPad is online, or tap **Update official data**. The last download stays available offline.
+- **FIRST's league rankings, meet results, other leagues, and the region and worlds team lists** come through your Google Sheet script, which holds the FIRST API key so it never sits on the iPads. The script needs version 1.5 or later for the Region and Worlds stages (see *Updating the script* in section 7).
+- Without the FIRST key, meet results come from FTCScout, and the Region and Worlds stages use FTCScout. FTCScout only shows the championships your own team is registered for. If it can't find one, search for it with **Not the right championship?**
 
 **Adding the FIRST API key** (once, after FIRST emails it to you):
 1. Register free at ftc-events.firstinspires.org/services/API.
@@ -182,7 +191,7 @@ The Sheet gets readable tabs you can sort, filter or chart. They are rebuilt on 
 
 **Updating the script** (when a new Hive Scout version needs it, like 1.2):
 1. Paste the new script over the old one, keeping your `TEAM_KEY`, and click **Save**.
-2. Run **setup** once and approve any new permission. Version 1.2 and later ask to "connect to an external service", which the script needs to reach FIRST. Version 1.3 adds FIRST match times and results for the Schedule tab.
+2. Run **setup** once and approve any new permission. Version 1.2 and later ask to "connect to an external service", which the script needs to reach FIRST. Version 1.3 adds FIRST match times and results for the Schedule tab. Version 1.5 adds other leagues and the region championship and worlds team lists for the League tab.
 3. Go to **Deploy → Manage deployments**, click the pencil icon, set **Version: New version**, and click **Deploy**. The web app URL stays the same, so the iPads need no changes.
 
 ## 8. Backups and exports

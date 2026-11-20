@@ -1,5 +1,7 @@
 import { hasLeague, inLeague, eventScope, inScope, saveLeague } from './store.js';
-import { official, refreshOfficial, startOfficial, oprFor, rankFor, meetsFor, liveFor, refreshLive } from './official.js';
+import { official, refreshOfficial, startOfficial, oprFor, rankFor, meetsFor, liveFor, refreshLive,
+  refreshView, stageInfo, leagueView, leagueChoices, lview, setLview, viewLive, viewUpdated, viewSource,
+  seasonMeetsFor, stageRanksFor, ourLeagueCode, divLabel, isOn, isOver, officialName } from './official.js';
 import { state, persist, newId, upsertRecord, deleteRecord, isMine, unsentRecords, markSent, activeEvent,
   eventRecords, saveEvent, getPick, setPick, backupObject, mergeBackup, clearAll, storageWorks } from './store.js';
 import { blankMatch, blankPit, toArr, fromArr, toCSV, LABELS, POSITIONS, posLabel } from './schema.js';
@@ -9,7 +11,7 @@ import { encodeMessage, Assembler, drawQR, Scanner } from './qr.js';
 import { observations, teamStats, eventContext, compatibility, tileXY, eventOrder, recencyWeights } from './analysis.js';
 import { cloud, cloudConfigured, cloudActive, cloudPending, syncNow, syncSoon, startCloud, resetCloudProgress } from './cloud.js';
 
-export const APP_VERSION = '1.4.0'; // keep in step with VERSION in sw.js
+export const APP_VERSION = '1.5.0'; // keep in step with VERSION in sw.js
 const S = () => state.settings;
 const $ = (sel, root = document) => root.querySelector(sel);
 const esc = v => String(v ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -277,6 +279,7 @@ function go(tab) {
   if (ui.tab === 'sync' && tab !== 'sync') stopScanner();
   ui.tab = tab;
   if (tab === 'schedule') refreshLive(activeEvent());
+  if (tab === 'league') refreshView();
   window.scrollTo(0, 0);
   render();
 }
@@ -1110,7 +1113,8 @@ function flagIcon(t) {
 
 function officialBlock(t, season) {
   const o = oprFor(t), r = rankFor(t);
-  if (!o && !r) return '';
+  const cr = stageRanksFor(t);
+  if (!o && !r && !cr.length) return '';
   const has = season.n || season.claimed;
   const row = (label, mine, theirs) => `<tr><td>${label}</td><td>${has ? f1(mine) : '–'}</td><td>${f1(theirs)}</td><td>${has && theirs != null ? gapHTML(mine - theirs) : '–'}</td></tr>`;
   return `<h3>Scouted vs official</h3>
@@ -1123,6 +1127,7 @@ function officialBlock(t, season) {
         ${o.eg != null ? row('Endgame (FLOWER, GARDEN, PARK)', season.estEnd, o.eg) : ''}
       </tbody></table></div>` : ''}
     ${r ? `<p class="small">League rank <b>#${r.rank}</b> · ranking score ${f2(r.rs)} · record ${r.w}-${r.l}-${r.t} · ${r.played} matches${r.avg != null ? ` · avg ${f1(r.avg)}` : ''}</p>` : ''}
+    ${cr.map(c => `<p class="small">${esc(c.name)}: rank <b>#${c.rank}</b> of ${c.of} · ranking score ${f2(c.rs)} · record ${c.w}-${c.l}-${c.t}</p>`).join('')}
     <p class="muted small">OPR is FTCScout's estimate of the points a team adds per match, worked out from official scores. FTCScout may split TELEOP and endgame differently than our scouting does. A big gap means a second look: your scouts may be missing something, or the robot has changed.</p>`;
 }
 
@@ -1140,7 +1145,7 @@ function teamModal(t) {
   const here = obs.filter(o => o.tm === t);
   const p = season.pit;
   const pick = getPick(t);
-  const name = teamName(t, ev) || (state.league && state.league.teams && state.league.teams[t]) || '';
+  const name = teamName(t, ev) || (state.league && state.league.teams && state.league.teams[t]) || officialName(t) || '';
   const meets = meetsFor(t);
   const seasonNotes = sd.obs.filter(o => o.tm === t && o.nt);
   openModal(`
@@ -1347,85 +1352,234 @@ function viewSchedule() {
 
 // ---------------------------------------------------------------- LEAGUE view (whole season)
 
-function ago2(t) { return t ? ago(t) : 'never'; }
+const fmtDate = d => (d ? new Date(d + 'T12:00:00').toLocaleDateString(undefined, { month: 'short', day: 'numeric' }) : '');
+const fmtRange = e => (!e || !e.start ? '' : e.end && e.end !== e.start ? `${fmtDate(e.start)}–${fmtDate(e.end)}` : fmtDate(e.start));
+function evWhen(e) { return !e ? '' : isOn(e) ? 'happening today' : isOver(e) ? `finished ${fmtRange(e)}` : e.start ? fmtRange(e) : 'date not posted'; }
+
+function meetsIn(meets, team) {
+  const out = [];
+  for (const m of meets || []) {
+    const r = (m.rankings || []).find(x => x.team === Number(team));
+    if (r) out.push({ code: m.code, name: m.name, date: m.date, ...r, of: (m.rankings || []).length });
+  }
+  return out;
+}
+
+function leagueErrText(e) {
+  if (!e) return '';
+  if (e === 'nokey') return 'Other leagues need your FTC Events API key in the Google Sheet script (README section 6).';
+  if (e === 'nocloud') return 'Other leagues come from FIRST through the Google Sheet backup. Set that up on the Sync tab first.';
+  return e;
+}
 
 function viewLeague() {
-  if (!hasLeague()) {
-    return `<section class="card"><h2>League</h2>
+  const info = stageInfo();
+  const body = info.stage === 'region' ? regionStage(info) : info.stage === 'worlds' ? worldsStage(info) : leagueStage(info);
+  return `<section class="card leaguecard">${stageBar(info)}${body}</section>`;
+}
+
+function stageBar(info) {
+  const b = (v, label) => `<button data-act="lstage" data-v="${v}" class="${info.stage === v ? 'on' : ''}">${label}${info.auto === v ? ' <small>· now</small>' : ''}</button>`;
+  return `<div class="stagebar">
+    <div class="seg stages">${b('league', 'League')}${b('region', 'Region')}${b('worlds', 'Worlds')}</div>
+    <p class="muted small">${info.manual
+      ? `Showing ${{ league: 'the league', region: 'the region championship', worlds: 'worlds' }[info.stage]} because you picked it. <button class="linkbtn" data-act="lstage" data-v="auto">Follow the season automatically</button>`
+      : esc(autoWhy(info))}</p>
+  </div>`;
+}
+
+function autoWhy(info) {
+  const lt = info.lts[0], c = info.champ;
+  if (info.auto === 'worlds') return `${c && isOver(c) ? c.name + ' is finished, so this' : 'This'} shows only the teams at the FIRST Championship. It switched on its own.`;
+  if (info.auto === 'region') return `${info.ltDone ? 'The League Tournament is finished, so this' : 'This'} shows only the teams that advanced to ${c.name}. It switched on its own.`;
+  if (info.ltDone) return 'The League Tournament is finished. This switches to the region championship on its own as soon as FIRST posts who advanced.';
+  return `League season. After the League Tournament${lt && lt.start ? ` (${fmtRange(lt)})` : ''} this switches on its own to only the teams that advanced to the region championship, then to worlds.`;
+}
+
+function updateLine(info, err) {
+  const at = viewUpdated(info);
+  const live = viewLive(info);
+  const src = viewSource(info);
+  const busy = official.viewBusy || official.busy;
+  const o = state.official;
+  const offline = navigator.onLine === false;
+  return `<div class="updline">
+    <span class="small ${busy ? 'busy' : 'muted'}">${busy ? esc(official.viewProgress || official.progress || 'Updating…')
+      : `${at ? `Updated ${ago(at)}${src ? ' from ' + esc(src) : ''}` : 'Not downloaded yet'} · ${offline ? 'offline, showing the last download' : `checks for new results every ${live ? '5 minutes (event today)' : '30 minutes'} while this tab is open`}`}</span>
+    <button data-act="refreshView" ${busy || offline ? 'disabled' : ''}>Update now</button>
+  </div>
+  ${err ? `<p class="banner warn">${esc(err)}</p>` : ''}
+  ${o.scoutErr && S().show.opr && !busy ? `<p class="muted small">FTCScout OPR: ${esc(o.scoutErr)}</p>` : ''}`;
+}
+
+function leagueStage(info) {
+  const lv = leagueView();
+  const choices = leagueChoices();
+  const picker = choices.length > 1 ? `<label class="inline lpick">League
+      <select data-change="lleague">${choices.map(l => `<option value="${esc(l.ours ? '' : l.code)}" ${(lv.ours ? l.ours : l.code === lv.code) ? 'selected' : ''}>${esc(l.name)}${l.ours ? ' (ours)' : l.parent ? ' (whole region)' : ''}</option>`).join('')}</select></label>` : '';
+  if (lv.ours && !Object.keys(lv.teams).length) {
+    return `${picker}<h2>League</h2>
       <p>Tell the app who is in your league, and this tab will follow every league team across all your meets, next to FIRST's league rankings and FTCScout's numbers.</p>
-      <button class="primary" data-act="tab" data-tab="event">Set up our league (Event tab)</button></section>`;
+      <button class="primary" data-act="tab" data-tab="event">Set up our league (Event tab)</button>
+      ${updateLine(info, '')}`;
   }
+  const rows = Object.keys(lv.teams).map(Number).filter(Boolean).map(t => ({ t, name: lv.teams[t] || teamName(t), r: lv.rankings[t] || null, m: meetsIn(lv.meets, t) }));
+  const nMeets = (lv.meets || []).length;
+  const err = lv.ours ? firstStatusText() : leagueErrText(lv.err);
+  return `${picker}
+    <h2>${esc(lv.name || 'Our league')} · season</h2>
+    <p class="muted small">${rows.length} teams · ${nMeets} meet${nMeets === 1 ? '' : 's'} so far${lv.ours ? '' : ' · not our league'}</p>
+    ${updateLine(info, err)}
+    ${seasonTable(rows, { rankLabel: 'League rank', meetsLabel: 'Meet results' })}
+    <p class="muted small">Scouted, Season est and Last meet are what your scouts recorded (every scout and every meet combined). ▲▼ compares the last meet with earlier meets. OPR comes from FTCScout; league rank, ranking score (RS), W-L-T and meet results come from FIRST when its key is set up (FTCScout otherwise). Tap a team for meet-by-meet detail.</p>`;
+}
+
+function stageErr(info) {
+  const c = info.cal || {};
+  if (c.err && !c.at) return c.err;
+  if (c.note === 'old') return 'Championship lists are coming from FTCScout, which only knows the events our own team is in. Update the Google Sheet script (README section 7) to get the full lists from FIRST.';
+  return c.err || '';
+}
+
+function findEventUI(kind) {
+  const res = ui.lfindRes || [];
+  const picked = lview()[kind];
+  return `<div class="findev">
+    <p class="small">${kind === 'champ' ? 'Find the region championship' : 'Find the FIRST Championship'} on FTCScout:</p>
+    <div class="row"><input id="lfindText" placeholder="${kind === 'champ' ? 'e.g. Kansas Missouri Championship' : 'e.g. FIRST Championship'}" value="${esc(ui.lfindText || '')}" autocomplete="off">
+      <button data-act="lfindGo" data-v="${kind}">Search</button></div>
+    ${ui.lfindBusy ? '<p class="busy">Searching…</p>' : ''}
+    ${res.length ? `<div class="list">${res.map(e => `<button class="listitem" data-act="lpick" data-v="${kind}" data-code="${esc(e.code)}"><b>${esc(e.code)}</b> ${esc(e.name)} <span class="muted small">${esc(String(e.start || '').slice(0, 10))}</span></button>`).join('')}</div>` : ''}
+    ${picked ? `<button class="ghost" data-act="lpick" data-v="${kind}" data-code="">Use the automatic choice again</button>` : ''}
+  </div>`;
+}
+
+function regionStage(info) {
+  const c = info.champ;
+  const our = Number(S().ourTeam);
+  if (!c) {
+    return `<h2>Region championship</h2>
+      <p>${state.official.stage ? 'No region championship found for your region yet.' : 'The championship list hasn\'t been downloaded yet.'} Once FIRST posts it, this shows only the teams that advanced from the league tournaments.</p>
+      ${updateLine(info, stageErr(info))}${findEventUI('champ')}`;
+  }
+  const picker = info.champs.length > 1 ? `<label class="inline lpick">Championship
+      <select data-change="lchamp">${info.champs.map(x => `<option value="${esc(x.code)}" ${x.code === c.code ? 'selected' : ''}>${esc(x.name)}</option>`).join('')}</select></label>` : '';
+  const ranks = {};
+  for (const r of c.rankings || []) ranks[r.team] = r;
+  const lo = (info.cal && info.cal.leagueOf) || {};
+  const names = Object.fromEntries(leagueChoices().map(l => [l.code, l.name]));
+  const ourCode = ourLeagueCode();
+  const rows = (c.teams || []).map(x => {
+    const from = lo[x.n] || (state.league && state.league.teams && x.n in state.league.teams ? ourCode || 'ours' : '');
+    return { t: x.n, name: x.name || teamName(x.n), from, fromTitle: names[from] || '', r: ranks[x.n] || null, m: seasonMeetsFor(x.n) };
+  });
+  const fromOurs = rows.filter(r => state.league && state.league.teams && r.t in state.league.teams).length;
+  const weIn = rows.some(r => r.t === our);
+  return `${picker}
+    <h2>${esc(c.name)}</h2>
+    <p class="muted small">${rows.length} team${rows.length === 1 ? '' : 's'} advanced · ${esc(evWhen(c))}${hasLeague() ? ` · ${fromOurs} from ${esc(state.league.name || 'our league')}` : ''}${our ? weIn ? ` · ${our} is in` : ` · ${our} is not on the list` : ''}</p>
+    ${updateLine(info, stageErr(info))}
+    ${seasonTable(rows, { rankLabel: 'Champ rank', from: 'League', meetsLabel: 'Season results' })}
+    <p class="muted small">Only teams on FIRST's team list for this championship are shown; teams that didn't advance are left out. The list fills in as each league tournament finishes. Champ rank, RS and W-L-T appear once matches start. Season results are each team's earlier events (FTCScout).</p>
+    <button class="linkbtn" data-act="lfind" data-v="champ">Not the right championship?</button>
+    ${ui.lfind === 'champ' ? findEventUI('champ') : ''}`;
+}
+
+function worldsStage(info) {
+  const f = info.fam;
+  const our = Number(S().ourTeam);
+  if (!f || !info.wTeams.length) {
+    return `<h2>FIRST Championship</h2>
+      <p>${f ? `FIRST hasn't posted who is going to ${esc(f.parent.name)} yet.` : state.official.stage ? 'No FIRST Championship found yet.' : 'The championship list hasn\'t been downloaded yet.'} Once it does, this shows only the teams that advanced to worlds.</p>
+      ${updateLine(info, stageErr(info))}${findEventUI('worlds')}`;
+  }
+  const divs = f.divs.filter(d => (d.teams || []).length);
+  const mine = info.wTeams.find(t => t.n === our);
+  const divSel = divs.length ? `<div class="seg divs">
+      <button data-act="ldiv" data-v="all" class="${!info.div ? 'on' : ''}">All divisions</button>
+      ${divs.map(d => `<button data-act="ldiv" data-v="${esc(d.code)}" class="${info.div === d.code ? 'on' : ''}">${esc(divLabel(d, f.parent))}${mine && mine.div === d.code ? ' ★' : ''}</button>`).join('')}
+    </div>` : '';
+  const shown = info.wTeams.filter(t => !info.div || t.div === info.div);
+  const rows = shown.map(x => ({ t: x.n, name: x.name || teamName(x.n), from: x.home, div: x.divName, r: x.r, m: seasonMeetsFor(x.n) }));
+  const curDiv = info.div ? divs.find(d => d.code === info.div) : null;
+  const when = curDiv || f.divs.find(d => d.start) || f.parent;
+  return `<h2>${esc(f.parent.name)}${curDiv ? ' · ' + esc(divLabel(curDiv, f.parent)) : ''}</h2>
+    <p class="muted small">${info.wTeams.length} teams at worlds${curDiv ? ` · ${rows.length} in this division` : ''} · ${esc(evWhen(when))}${our ? mine ? ` · ${our} is in${mine.divName ? ' ' + esc(mine.divName) : ''}` : ` · ${our} is not on the list` : ''}</p>
+    ${divSel}
+    ${updateLine(info, stageErr(info))}
+    ${seasonTable(rows, { rankLabel: divs.length ? 'Div rank' : 'Rank', from: 'From', div: !curDiv && divs.length > 0, meetsLabel: 'Season results' })}
+    <p class="muted small">Only teams on FIRST's team list for worlds are shown. Div rank, RS and W-L-T are from each team's own division once matches start. "From" is the team's home region. Season results are each team's earlier events (FTCScout)${shown.length > 80 ? '; with all divisions shown they load 80 teams at a time' : ''}.</p>
+    <button class="linkbtn" data-act="lfind" data-v="worlds">Not the right event?</button>
+    ${ui.lfind === 'worlds' ? findEventUI('worlds') : ''}`;
+}
+
+// One season table for every League tab view. rows: [{ t, name, from?, div?, r: rank|null, m: [meet results] }]
+function seasonTable(input, opts = {}) {
   const sd = computeSeason();
-  const L = state.league;
   const sh = S().show;
   const our = Number(S().ourTeam);
-  const o = state.official;
   const q = (ui.lfilter || '').trim().toLowerCase();
-  let rows = Object.keys(L.teams).map(Number).map(t => {
-    const st = seasonStats(t, sd, false);
-    const op = oprFor(t), r = rankFor(t);
+  let rows = input.map(x => {
+    const st = seasonStats(x.t, sd, false);
+    const op = oprFor(x.t), r = x.r;
     const has = st.n > 0;
     return {
-      t, st, op, r, m: meetsFor(t),
+      ...x, st, op,
       v: {
-        team: t, n: st.n, est: has || st.claimed ? st.est : null, last: has ? st.lastEst : null, trend: has ? st.trend : null,
+        team: x.t, from: x.from || null, div: x.div || null, n: st.n, est: has || st.claimed ? st.est : null, last: has ? st.lastEst : null, trend: has ? st.trend : null,
         made: has ? st.made : null, flower: has ? st.flower : null, park: has ? st.park : null, foul: has ? st.foulPts : null, broke: has ? st.broke : null,
         opr: op ? op.tot : null, oprAuto: op ? op.auto : null, gap: op && has ? st.est - op.tot : null,
         rank: r ? r.rank : null, rs: r ? r.rs : null, wins: r ? r.w : null,
       },
     };
   });
-  if (q) rows = rows.filter(x => String(x.t).includes(q) || (L.teams[x.t] || teamName(x.t) || '').toLowerCase().includes(q));
+  if (q) rows = rows.filter(x => String(x.t).includes(q) || String(x.name || '').toLowerCase().includes(q) || String(x.from || '').toLowerCase().includes(q));
   const { k, d } = ui.lsort;
   rows.sort((a, b) => {
     const av = a.v[k], bv = b.v[k];
     if (av == null && bv == null) return a.t - b.t;
     if (av == null) return 1;
     if (bv == null) return -1;
-    return (av - bv) * d || a.t - b.t;
+    const c = typeof av === 'string' ? String(av).localeCompare(String(bv)) : av - bv;
+    return c * d || a.t - b.t;
   });
   const th = (key, label, title = '') => `<th data-act="lsort" data-k="${key}" class="${k === key ? 'sorted' : ''}" ${title ? `title="${esc(title)}"` : ''}>${label}${k === key ? (d < 0 ? ' ▼' : ' ▲') : ''}</th>`;
-  const fs = firstStatusText();
-  const leagueMeets = sd.order.length;
+  const nScouted = rows.filter(x => x.st.n).length;
   return `
-  <section class="card">
-    <h2>${esc(L.name || 'Our league')} · season</h2>
-    <p class="muted small">${Object.keys(L.teams).length} teams · ${leagueMeets} meet${leagueMeets === 1 ? '' : 's'} scouted · ${rows.filter(x => x.st.n).length} teams with scouting data</p>
     <div class="official-bar">
       <span class="flabel">Official data</span>
       <div class="flags">
         <button class="toggle ${sh.opr ? 'on' : ''}" data-act="show" data-k="opr">${sh.opr ? '✓ ' : ''}FTCScout OPR</button>
-        <button class="toggle ${sh.rank ? 'on' : ''}" data-act="show" data-k="rank">${sh.rank ? '✓ ' : ''}League rankings</button>
-        <button class="toggle ${sh.meets ? 'on' : ''}" data-act="show" data-k="meets">${sh.meets ? '✓ ' : ''}Meet results</button>
-        <button data-act="refreshOfficial" ${official.busy ? 'disabled' : ''}>${official.busy ? 'Updating…' : 'Update official data'}</button>
+        <button class="toggle ${sh.rank ? 'on' : ''}" data-act="show" data-k="rank">${sh.rank ? '✓ ' : ''}Rankings</button>
+        <button class="toggle ${sh.meets ? 'on' : ''}" data-act="show" data-k="meets">${sh.meets ? '✓ ' : ''}${esc(opts.meetsLabel || 'Meet results')}</button>
       </div>
-      <p class="muted small">${official.busy ? esc(official.progress) : `FTCScout OPR: ${o.scoutErr ? esc(o.scoutErr) : 'updated ' + ago2(o.oprAt)} · FIRST rankings: ${o.rankAt && !o.firstErr ? 'updated ' + ago2(o.rankAt) : esc(fs || 'not loaded yet')}${o.meets && o.meets.length ? ` · meet results from ${esc(o.meets[0].src || '')}` : ''}`}</p>
     </div>
     <div class="row"><input data-ui="lfilter" data-change="lfilter" value="${esc(ui.lfilter || '')}" placeholder="Filter by number or name" autocomplete="off"></div>
+    <p class="muted small">${rows.length} team${rows.length === 1 ? '' : 's'} · ${nScouted} with our scouting data</p>
     <div class="tablewrap"><table class="tbl league">
       <thead><tr>
-        ${th('team', 'Team')}${th('n', 'Scouted')}${th('est', 'Season est', 'Average points per match our scouts saw, all meets')}${th('last', 'Last meet', 'Average at the most recent meet we scouted them, with trend vs earlier meets')}
+        ${th('team', 'Team')}${opts.div ? th('div', 'Division') : ''}${opts.from ? th('from', esc(opts.from)) : ''}${th('n', 'Scouted')}${th('est', 'Season est', 'Average points per match our scouts saw, all meets')}${th('last', 'Last meet', 'Average at the most recent meet we scouted them, with trend vs earlier meets')}
         ${th('made', 'HIVE/m')}${th('flower', 'FLOWER/m')}${th('park', 'Park')}${th('foul', 'Foul pts')}${th('broke', 'Breakdowns')}
         ${sh.opr ? `${th('opr', 'OPR', 'FTCScout: points added per match, from official scores')}${th('oprAuto', 'AUTO OPR')}${th('gap', 'Scouts − OPR', 'Positive: our scouts saw more than OPR. Negative: less.')}` : ''}
-        ${sh.rank ? `${th('rank', 'League rank')}${th('rs', 'RS', 'Ranking score')}${th('wins', 'W-L-T')}` : ''}
-        ${sh.meets ? '<th>Meet results</th>' : ''}
+        ${sh.rank ? `${th('rank', esc(opts.rankLabel || 'Rank'))}${th('rs', 'RS', 'Ranking score')}${th('wins', 'W-L-T')}` : ''}
+        ${sh.meets ? `<th>${esc(opts.meetsLabel || 'Meet results')}</th>` : ''}
       </tr></thead>
       <tbody>${rows.map(x => {
         const st = x.st, v = x.v;
         return `<tr data-act="team" data-team="${x.t}" class="${x.t === our ? 'ours' : ''} ${getPick(x.t)}">
-          <td><b>${x.t}</b> <span class="tname">${esc(L.teams[x.t] || teamName(x.t))}</span> ${flagIcon(x.t)}</td>
+          <td><b>${x.t}</b> <span class="tname">${esc(x.name || '')}</span> ${flagIcon(x.t)}</td>
+          ${opts.div ? `<td>${esc(x.div || '–')}</td>` : ''}
+          ${opts.from ? `<td ${x.fromTitle ? `title="${esc(x.fromTitle)}"` : ''}>${esc(x.from || '–')}</td>` : ''}
           <td>${st.n ? `${st.n} <small class="muted">(${st.meets})</small>` : st.claimed ? 'pit' : '–'}</td>
           <td><b>${f1(v.est)}</b></td>
           <td>${v.last != null ? f1(v.last) : '–'} ${trendHTML(v.trend)}</td>
           <td>${f1(v.made)}</td><td>${f1(v.flower)}</td><td>${v.park != null ? pct(v.park) : '–'}</td><td>${f1(v.foul)}</td><td>${v.broke != null ? pct(v.broke) : '–'}</td>
           ${sh.opr ? `<td>${f1(v.opr)}</td><td>${f1(v.oprAuto)}</td><td>${gapHTML(v.gap)}</td>` : ''}
           ${sh.rank ? `<td>${x.r ? '#' + x.r.rank : '–'}</td><td>${x.r ? f2(x.r.rs) : '–'}</td><td>${x.r ? `${x.r.w}-${x.r.l}-${x.r.t}` : '–'}</td>` : ''}
-          ${sh.meets ? `<td class="mres">${x.m.length ? x.m.map(m => `<span class="mr" title="${esc(m.name)}">#${m.rank} <small>${m.w}-${m.l}-${m.t}</small></span>`).join('') : '–'}</td>` : ''}
+          ${sh.meets ? `<td class="mres">${x.m && x.m.length ? x.m.map(m => `<span class="mr" title="${esc(m.name)}">#${m.rank} <small>${m.w}-${m.l}-${m.t}</small></span>`).join('') : '–'}</td>` : ''}
         </tr>`;
       }).join('')}</tbody>
-    </table></div>
-    <p class="muted small">Season est and Last meet are what your scouts recorded (every scout and every meet combined). ▲▼ compares the last meet with earlier meets. OPR comes from FTCScout; league rank, ranking score (RS), W-L-T and meet results come from FIRST when its key is set up (FTCScout otherwise). Tap a team for meet-by-meet detail.</p>
-  </section>`;
+    </table></div>`;
 }
 
 // ---------------------------------------------------------------- PARTNERS view
@@ -1712,6 +1866,47 @@ const actions = {
     await p;
     render();
   },
+  refreshView: async () => {
+    if (!navigator.onLine) return toast('This iPad is offline. Showing the last download.', 'err');
+    const p = refreshView({ force: true });
+    render();
+    await p;
+    render();
+  },
+  lstage: el => {
+    setLview({ stage: el.dataset.v });
+    ui.lfind = null;
+    render();
+    refreshView();
+  },
+  ldiv: el => {
+    setLview({ div: el.dataset.v });
+    render();
+    refreshView();
+  },
+  lfind: el => { ui.lfind = ui.lfind === el.dataset.v ? null : el.dataset.v; ui.lfindRes = []; render(); },
+  lfindGo: async el => {
+    const q = (($('#lfindText') || {}).value || '').trim();
+    ui.lfindText = q;
+    if (!q) return toast('Type part of the event name.');
+    ui.lfind = el.dataset.v;
+    ui.lfindBusy = true; render();
+    try {
+      ui.lfindRes = await ftcscoutSearch(S().season, q);
+      if (!ui.lfindRes.length) toast('No events matched.');
+    } catch (e) { toast(friendlyError(e), 'err'); }
+    ui.lfindBusy = false;
+    render();
+  },
+  lpick: async el => {
+    const kind = el.dataset.v;
+    setLview({ [kind]: el.dataset.code || '', stage: el.dataset.code ? (kind === 'champ' ? 'region' : 'worlds') : lview().stage });
+    ui.lfind = null; ui.lfindRes = [];
+    const p = refreshView({ force: true });
+    render();
+    await p;
+    render();
+  },
   lsort: el => {
     const k = el.dataset.k;
     const asc = ['team', 'rank', 'foul', 'broke'];
@@ -1979,6 +2174,14 @@ document.addEventListener('change', async e => {
     ui.filter = el.value; renderSoon();
   } else if (el.dataset.change === 'lfilter') {
     ui.lfilter = el.value; renderSoon();
+  } else if (el.dataset.change === 'lleague') {
+    setLview({ league: el.value });
+    render();
+    refreshView().then(render);
+  } else if (el.dataset.change === 'lchamp') {
+    setLview({ champ: el.value });
+    render();
+    refreshView().then(render);
   } else if (el.dataset.change === 'watchOurs') {
     state.settings.watchOurs = el.checked; persist('settings'); render();
   } else if (el.dataset.change === 'covMissingOnly') {
@@ -2055,6 +2258,10 @@ official.onChange = () => {
 setInterval(renderHeader, 30000);
 // Keep match times and results fresh while someone is looking at the Schedule tab.
 setInterval(() => { if (ui.tab === 'schedule' && !document.hidden) refreshLive(activeEvent()); }, 60000);
+// …and keep the League tab current (it only downloads what is out of date: every 5 min on event days, 30 min otherwise).
+setInterval(() => { if (ui.tab === 'league' && !document.hidden) refreshView(); }, 60000);
+document.addEventListener('visibilitychange', () => { if (!document.hidden && ui.tab === 'league') refreshView(); });
+window.addEventListener('online', () => { if (ui.tab === 'league') setTimeout(() => refreshView(), 2000); });
 
 // First run: start on Scout if everything is set up
 if (activeEvent() && S().scoutName) ui.tab = 'scout';

@@ -321,3 +321,49 @@ export async function ftcscoutLive(season, code) {
   }
   return out.sort((a, b) => a.n - b.n);
 }
+
+// ---------- FTCScout championship fields (used when FIRST data isn't set up) ----------
+
+// Basic facts about one event: its type tells league tournaments, region championships and worlds apart.
+export async function ftcscoutEventInfo(season, code) {
+  offlineCheck();
+  const e = await rest(`/events/${season}/${encodeURIComponent(code)}`);
+  if (!e) return null;
+  const d = v => String(v || '').slice(0, 10);
+  return {
+    code: String(e.code || code).toUpperCase(), name: e.name || code, type: String(e.type || ''),
+    region: String(e.regionCode || ''), league: String(e.leagueCode || '').split('/').pop(), div: String(e.divisionCode || ''),
+    start: d(e.start || e.dateStart), end: d(e.end || e.dateEnd || e.start || e.dateStart),
+  };
+}
+
+// Every team registered for an event, with names and (once matches are played) rank and record there.
+export async function ftcscoutEventField(season, code) {
+  offlineCheck();
+  const names = {};
+  try {
+    const d = await gql(`query E($s:Int!,$c:String!){eventByCode(season:$s,code:$c){teams{teamNumber team{name}}}}`, { s: Number(season), c: code });
+    for (const t of (d && d.eventByCode && d.eventByCode.teams) || []) names[t.teamNumber] = (t.team && t.team.name) || '';
+  } catch (e) { /* the REST list below still works */ }
+  const list = (await rest(`/events/${season}/${encodeURIComponent(code)}/teams`).catch(() => null)) || [];
+  const teams = new Map(Object.keys(names).map(n => [Number(n), { n: Number(n), name: names[n] }]));
+  const rankings = [];
+  for (const p of list) {
+    const n = Number(p.teamNumber ?? (p.team && p.team.number));
+    if (!n) continue;
+    if (!teams.has(n)) teams.set(n, { n, name: (p.team && p.team.name) || '' });
+    const st = p.stats || {};
+    const rank = num(st.rank);
+    if (rank) rankings.push({ team: n, rank, rs: num(st.rp ?? st.rankingScore), w: num(st.wins) || 0, l: num(st.losses) || 0, t: num(st.ties) || 0, played: num(st.qualMatchesPlayed ?? st.matchesPlayed) || 0, avg: null });
+  }
+  return { teams: [...teams.values()].sort((a, b) => a.n - b.n), rankings: rankings.sort((a, b) => a.rank - b.rank) };
+}
+
+// Team names for numbers we only know from a roster.
+export async function ftcscoutTeamNames(nums) {
+  offlineCheck();
+  const teams = {};
+  for (const n of nums) teams[n] = '';
+  await fillNames(teams);
+  return teams;
+}
